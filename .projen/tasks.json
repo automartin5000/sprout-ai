@@ -1,0 +1,356 @@
+{
+  "tasks": {
+    "app:build": {
+      "name": "app:build",
+      "description": "Build Electron renderer + main + preload",
+      "steps": [
+        {
+          "spawn": "app:build:renderer"
+        },
+        {
+          "spawn": "app:build:main"
+        }
+      ]
+    },
+    "app:build:main": {
+      "name": "app:build:main",
+      "description": "Build the Electron main + preload (esbuild)",
+      "steps": [
+        {
+          "exec": "bunx tsx scripts/build-electron-main.ts"
+        }
+      ]
+    },
+    "app:build:renderer": {
+      "name": "app:build:renderer",
+      "description": "Build the Electron renderer (Vite)",
+      "steps": [
+        {
+          "exec": "vite build --config app/renderer/vite.config.ts"
+        }
+      ]
+    },
+    "app:dev": {
+      "name": "app:dev",
+      "description": "Run the Electron app with hot-reload Vite renderer",
+      "steps": [
+        {
+          "exec": "bunx tsx scripts/dev-electron.ts"
+        }
+      ]
+    },
+    "app:package": {
+      "name": "app:package",
+      "description": "Package the Mac app DMGs (per-arch) via electron-builder",
+      "steps": [
+        {
+          "exec": "electron-builder --mac --config electron-builder.yml"
+        }
+      ]
+    },
+    "app:stage-resources": {
+      "name": "app:stage-resources",
+      "description": "Stage extraResources (binaries + plugins) for the Electron build",
+      "steps": [
+        {
+          "spawn": "binaries:download"
+        },
+        {
+          "spawn": "plugins:stage-sprout"
+        }
+      ]
+    },
+    "binaries:download": {
+      "name": "binaries:download",
+      "description": "Download Node, git, AWS CLI, Podman into app/resources/bin per-arch",
+      "steps": [
+        {
+          "exec": "bunx tsx scripts/download-binaries.ts"
+        }
+      ]
+    },
+    "build": {
+      "name": "build",
+      "description": "Full release build",
+      "steps": [
+        {
+          "spawn": "default"
+        },
+        {
+          "spawn": "pre-compile"
+        },
+        {
+          "spawn": "compile"
+        },
+        {
+          "spawn": "post-compile"
+        },
+        {
+          "spawn": "test"
+        },
+        {
+          "spawn": "package"
+        }
+      ]
+    },
+    "bundle": {
+      "name": "bundle",
+      "description": "Prepare assets"
+    },
+    "cdk:bootstrap": {
+      "name": "cdk:bootstrap",
+      "description": "Bootstrap the CDK environment",
+      "steps": [
+        {
+          "exec": "cdk bootstrap",
+          "receiveArgs": true
+        }
+      ]
+    },
+    "clobber": {
+      "name": "clobber",
+      "description": "hard resets to HEAD of origin and cleans the local repo",
+      "env": {
+        "BRANCH": "$(git branch --show-current)"
+      },
+      "steps": [
+        {
+          "exec": "git checkout -b scratch",
+          "name": "save current HEAD in \"scratch\" branch"
+        },
+        {
+          "exec": "git checkout $BRANCH"
+        },
+        {
+          "exec": "git fetch origin",
+          "name": "fetch latest changes from origin"
+        },
+        {
+          "exec": "git reset --hard origin/$BRANCH",
+          "name": "hard reset to origin commit"
+        },
+        {
+          "exec": "git clean -fdx",
+          "name": "clean all untracked files"
+        },
+        {
+          "say": "ready to rock! (unpushed commits are under the \"scratch\" branch)"
+        }
+      ],
+      "condition": "git diff --exit-code > /dev/null"
+    },
+    "compile": {
+      "name": "compile",
+      "description": "Only compile",
+      "steps": [
+        {
+          "spawn": "type-check"
+        },
+        {
+          "spawn": "plugins:stage-sprout"
+        },
+        {
+          "exec": "bun run lambda:build"
+        },
+        {
+          "exec": "bun run runtime:build"
+        },
+        {
+          "exec": "bun run app:build"
+        }
+      ]
+    },
+    "default": {
+      "name": "default",
+      "description": "Synthesize project files",
+      "steps": [
+        {
+          "exec": "bun .projenrc.ts"
+        }
+      ]
+    },
+    "deploy": {
+      "name": "deploy",
+      "description": "Deploys your CDK app to the AWS cloud",
+      "steps": [
+        {
+          "spawn": "compile"
+        },
+        {
+          "exec": "echo \"Deploying to $DEPLOY_ENV\""
+        },
+        {
+          "exec": "cdk deploy",
+          "receiveArgs": true
+        }
+      ]
+    },
+    "destroy": {
+      "name": "destroy",
+      "description": "Destroys your cdk app in the AWS cloud",
+      "steps": [
+        {
+          "exec": "cdk destroy",
+          "receiveArgs": true
+        }
+      ]
+    },
+    "diff": {
+      "name": "diff",
+      "description": "Diffs the currently deployed app against your code",
+      "steps": [
+        {
+          "exec": "cdk diff"
+        }
+      ]
+    },
+    "eject": {
+      "name": "eject",
+      "description": "Remove projen from the project",
+      "env": {
+        "PROJEN_EJECTING": "true"
+      },
+      "steps": [
+        {
+          "spawn": "default"
+        }
+      ]
+    },
+    "eslint": {
+      "name": "eslint",
+      "description": "Runs eslint against the codebase",
+      "env": {
+        "ESLINT_USE_FLAT_CONFIG": "false"
+      },
+      "steps": [
+        {
+          "exec": "eslint --ext .ts,.tsx --fix --no-error-on-unmatched-pattern $@ app lambda infra runtime shared scripts tests test build-tools projenrc .projenrc.ts",
+          "receiveArgs": true
+        }
+      ]
+    },
+    "install": {
+      "name": "install",
+      "description": "Install project dependencies and update lockfile (non-frozen)",
+      "steps": [
+        {
+          "exec": "bun install"
+        }
+      ]
+    },
+    "install:ci": {
+      "name": "install:ci",
+      "description": "Install project dependencies using frozen lockfile",
+      "steps": [
+        {
+          "exec": "bun install --frozen-lockfile"
+        }
+      ]
+    },
+    "lambda:build": {
+      "name": "lambda:build",
+      "description": "Bundle the Hono Lambda with esbuild",
+      "steps": [
+        {
+          "exec": "bunx tsx scripts/build-lambda.ts"
+        }
+      ]
+    },
+    "package": {
+      "name": "package",
+      "description": "Creates the distribution package"
+    },
+    "plugins:stage-sprout": {
+      "name": "plugins:stage-sprout",
+      "description": "Stage the first-party sprout plugin into app/resources/plugins/sprout",
+      "steps": [
+        {
+          "exec": "bunx tsx scripts/stage-sprout-plugin.ts"
+        }
+      ]
+    },
+    "post-compile": {
+      "name": "post-compile",
+      "description": "Runs after successful compilation",
+      "steps": [
+        {
+          "spawn": "synth:silent"
+        }
+      ]
+    },
+    "pre-compile": {
+      "name": "pre-compile",
+      "description": "Prepare the project for compilation"
+    },
+    "runtime:build": {
+      "name": "runtime:build",
+      "description": "Bundle the shared runtime Lambda + Lambda@Edge router",
+      "steps": [
+        {
+          "exec": "bunx tsx scripts/build-runtime.ts"
+        }
+      ]
+    },
+    "synth": {
+      "name": "synth",
+      "description": "Synthesizes your cdk app into cdk.out",
+      "steps": [
+        {
+          "exec": "cdk synth"
+        }
+      ]
+    },
+    "synth:silent": {
+      "name": "synth:silent",
+      "description": "Synthesizes your cdk app into cdk.out and suppresses the template in stdout (part of \"yarn build\")",
+      "steps": [
+        {
+          "exec": "cdk synth -q"
+        }
+      ]
+    },
+    "test": {
+      "name": "test",
+      "description": "Run tests",
+      "steps": [
+        {
+          "exec": "vitest run"
+        }
+      ]
+    },
+    "test:watch": {
+      "name": "test:watch",
+      "description": "Run jest in watch mode",
+      "steps": [
+        {
+          "exec": "jest --watch"
+        }
+      ]
+    },
+    "type-check": {
+      "name": "type-check",
+      "description": "Type check TypeScript files with strict mode",
+      "steps": [
+        {
+          "exec": "tsc --noEmit --strict --project tsconfig.dev.json"
+        }
+      ]
+    },
+    "watch": {
+      "name": "watch",
+      "description": "Watches changes in your source code and rebuilds and deploys to the current account",
+      "steps": [
+        {
+          "exec": "cdk deploy --hotswap"
+        },
+        {
+          "exec": "cdk watch"
+        }
+      ]
+    }
+  },
+  "env": {
+    "PATH": "$(bun --eval \"console.log(process.env.PATH)\")"
+  },
+  "//": "~~ Generated by projen. To modify, edit .projenrc.ts and run \"bun .projenrc.ts\"."
+}

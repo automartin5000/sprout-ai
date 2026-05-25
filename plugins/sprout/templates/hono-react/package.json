@@ -1,0 +1,33 @@
+{
+  "name": "__APP_SLUG__",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n server,client -c green,blue \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "wait-on tcp:127.0.0.1:5175 --timeout 60000 && vite",
+    "dev:server": "npx tsx watch server/index.ts",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "vite build",
+    "build:server": "npx esbuild server/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=server-dist/server.js --external:@aws-sdk/*",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "@aws-sdk/client-dynamodb": "3.1053.0",
+    "@aws-sdk/lib-dynamodb": "3.1053.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "wait-on": "^8.0.1"
+  }
+}

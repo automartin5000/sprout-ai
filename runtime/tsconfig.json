@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "module": "esnext",
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["handler.ts", "edge-router.ts"]
+}

@@ -1,0 +1,38 @@
+appId: com.sprout.desktop
+productName: sprout
+copyright: Copyright © 2026 sprout
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - "dist-electron/**/*"
+  - "dist-renderer/**/*"
+  - "package.json"
+  - "!**/*.map"
+
+extraResources:
+  - from: "app/resources/bin/${arch}"
+    to: "bin"
+    filter:
+      - "**/*"
+  - from: "app/resources/plugins"
+    to: "plugins"
+    filter:
+      - "**/*"
+
+mac:
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  notarize: false  # enable per-release via env once team ID is configured
+
+dmg:
+  sign: false

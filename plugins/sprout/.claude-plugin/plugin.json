@@ -1,0 +1,6 @@
+{
+  "name": "sprout",
+  "description": "First-party Sprout starter: scaffolds a Hono + React (Vite) app shaped for Sprout's shared runtime. No AWS account setup, no CDK, no jargon — apps deploy to Sprout's hosted infra via the Publish button.",
+  "version": "0.1.0",
+  "license": "MIT"
+}
