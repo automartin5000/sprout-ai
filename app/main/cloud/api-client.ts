@@ -70,7 +70,20 @@ export class ApiClient {
 async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+    // If the body is a JSON envelope with a `message` field (Hono's
+    // structured error responses — sandbox_unavailable, etc.), promote the
+    // message to the thrown Error so PublishModal shows a sentence rather
+    // than `API 503: {"error":"…","message":"…"}`. Fall back to the raw
+    // body when the envelope doesn't match — preserves debuggability for
+    // errors we haven't typed.
+    let detail = text || res.statusText;
+    try {
+      const parsed = JSON.parse(text) as { message?: unknown };
+      if (typeof parsed.message === 'string' && parsed.message.length > 0) {
+        detail = parsed.message;
+      }
+    } catch { /* not JSON; use raw text */ }
+    throw new Error(`API ${res.status}: ${detail}`);
   }
   const ct = res.headers.get('content-type') ?? '';
   if (ct.includes('application/json')) return (await res.json()) as T;

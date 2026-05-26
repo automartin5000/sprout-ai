@@ -61,17 +61,35 @@ const generateShareCode = customAlphabet(SHARE_CODE_ALPHABET, 8);
 
 const s3 = new S3Client({});
 
+/**
+ * Thrown when a sandbox-publish endpoint is hit on a server that doesn't
+ * have S3 configured — i.e. the local Hono mock used by `pj app:dev`. The
+ * global onError in lambda/api/index.ts renders this as a 503 with a clear
+ * message instead of an opaque 500 "internal_server_error".
+ *
+ * To actually exercise "Share preview to sandbox" locally, run
+ *   SPROUT_USE_DEPLOYED=1 pj app:dev
+ * which routes the desktop at the deployed Sprout-${env} API (where the
+ * bucket env vars are wired up by infra/lib/sprout-stack.ts).
+ */
+export class SandboxNotConfiguredError extends Error {
+  readonly missingVar: string;
+  constructor(missingVar: string) {
+    super(`${missingVar} env var is not configured`);
+    this.name = 'SandboxNotConfiguredError';
+    this.missingVar = missingVar;
+  }
+}
+
 function stagingBucket(): string {
   const bucket = process.env.STAGING_BUCKET;
-  if (!bucket) {
-    throw new Error('STAGING_BUCKET env var is not configured');
-  }
+  if (!bucket) throw new SandboxNotConfiguredError('STAGING_BUCKET');
   return bucket;
 }
 
 function codeBucket(): string {
   const bucket = process.env.CODE_BUCKET;
-  if (!bucket) throw new Error('CODE_BUCKET env var is not configured');
+  if (!bucket) throw new SandboxNotConfiguredError('CODE_BUCKET');
   return bucket;
 }
 
