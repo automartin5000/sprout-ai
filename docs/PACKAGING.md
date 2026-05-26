@@ -55,6 +55,45 @@ Add these to your shell profile or a `.env` file that you `source` before runnin
 
 ---
 
+## Configure build-time values
+
+The packaged `.dmg` doesn't read a `.env` file at runtime — it can't, because users install it to `/Applications/` and don't have shell env vars wired through to GUI apps. Instead, Auth0 + endpoint config is **baked into the bundle** at build time via esbuild `define:`. Once baked, one `.dmg` = one preconfigured environment.
+
+Before packaging, create `sprout.build-config.json` at the repo root (gitignored). Copy from `sprout.build-config.example.json`:
+
+```bash
+cp sprout.build-config.example.json sprout.build-config.json
+# Edit with your tenant + endpoint values
+```
+
+Schema:
+
+```json
+{
+  "AUTH0_DOMAIN":           "your-tenant.us.auth0.com",
+  "AUTH0_AUDIENCE":         "https://api.your-domain.com",
+  "AUTH0_NATIVE_CLIENT_ID": "abc123def456",
+  "CLOUD_API_URL":          "https://api.your-domain.com",
+  "APPS_BASE_URL":          "https://apps.your-domain.com"
+}
+```
+
+For CI builds, set these as environment variables instead of writing a file. The loader checks `process.env.X` when the JSON file is absent. JSON file wins when both are present.
+
+**What each key does at runtime:**
+
+| Key | Used by | If missing |
+|---|---|---|
+| `AUTH0_DOMAIN` | Sign-in PKCE flow | Sign-in button is non-functional; user can only use guest mode |
+| `AUTH0_AUDIENCE` | JWT audience claim | Same — Auth0Native is only constructed when all three are set |
+| `AUTH0_NATIVE_CLIENT_ID` | PKCE client identification | Same |
+| `CLOUD_API_URL` | Project metadata sync, Share preview to sandbox | Falls back to `http://localhost:3001`; cloud features fail-closed |
+| `APPS_BASE_URL` | The `https://apps.…/<projectId>/` URL displayed after publish | Falls back to `https://apps.sprout.local`; never shown to user but used in API responses |
+
+The build still succeeds with missing values — you just get a `.dmg` with degraded features. `scripts/load-build-config.ts:formatBuildConfigReport()` logs which keys are missing during the build for visibility.
+
+**Never put in this file:** Auth0 client secrets, Anthropic API keys, Copilot tokens, AWS credentials. The bundle is read-only and inspectable by anyone with the `.dmg` — bake-time values are effectively public.
+
 ## Build steps
 
 ### 1. Stage extra resources
@@ -69,6 +108,27 @@ This runs:
 - `scripts/stage-sprout-plugin.ts` — copies `plugins/sprout/` into `app/resources/plugins/sprout/` so it's bundled.
 
 Idempotent. Re-running skips already-downloaded archives.
+
+#### Bundling a different set of plugins
+
+By default the staging step bundles `sprout` (the new-app starter) and `sprout-cicd-github` (GitHub Actions deploy provider). Set `BUNDLED_PLUGINS` to change what ships in the `.dmg`:
+
+```bash
+# Default
+pj app:stage-resources
+
+# Swap GitHub for Jenkins (e.g. for a work-machine build)
+BUNDLED_PLUGINS=sprout,sprout-cicd-jenkins pj app:stage-resources
+
+# Ship both — useful if your install can target either
+BUNDLED_PLUGINS=sprout,sprout-cicd-github,sprout-cicd-jenkins pj app:stage-resources
+```
+
+Each name must match a directory under `plugins/` with a `.claude-plugin/plugin.json` manifest. Misspelled names fail the build loudly (no silent fallback to defaults).
+
+Plugins not in the requested list are removed from `app/resources/plugins/` so switching configurations doesn't leak stale providers.
+
+Users can also drop plugins into `~/Library/Application Support/Electron/plugins/` post-install — see [CUSTOM_INSTALL.md](./CUSTOM_INSTALL.md).
 
 ### 2. Build the renderer + main process
 

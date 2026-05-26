@@ -308,9 +308,8 @@ This is a bigger lift than the CI/CD plugin — there's no plugin contract for i
 
 1. Deploy `infra/lib/sprout-stack.ts` to your AWS account (`DEPLOY_ENV=corp pj deploy`).
 2. Configure the corp Auth0 tenant (or whichever IdP your security team allows). See [docs/runbooks/auth0-e2e.md](./runbooks/auth0-e2e.md) for the tenant-setup steps; substitute your tenant's URL + API audience.
-3. Build a custom `.dmg` with your stack's `apps.<env>` URL hardcoded. The two values to change:
-   - `shared/environments.ts` — add a new `corp` env keyed off `DEPLOY_ENV`
-   - `app/main/auth/auth0-native.ts` — the Auth0 tenant URL + audience defaults
+3. Build a custom `.dmg` with your stack's endpoint baked in. Create `sprout.build-config.json` at the repo root with your `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `AUTH0_NATIVE_CLIENT_ID`, `CLOUD_API_URL`, and `APPS_BASE_URL`. Then `pj app:package`. See [PACKAGING.md § Configure build-time values](./PACKAGING.md#configure-build-time-values) for the full reference; the values get inlined into the bundle via esbuild `define:`.
+4. Optionally swap the bundled CI/CD plugin if your install can't reach GitHub: `BUNDLED_PLUGINS=sprout,sprout-cicd-jenkins pj app:stage-resources` before packaging. See [PACKAGING.md § Bundling a different set of plugins](./PACKAGING.md#bundling-a-different-set-of-plugins).
 
 That's the route if your security team accepts CloudFront + Lambda + DDB + S3 inside your account. If they don't accept Lambda at all (some banks), Sprout's architecture isn't the right fit — you'd be rewriting the runtime.
 

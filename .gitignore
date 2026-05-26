@@ -63,5 +63,6 @@ test-results
 plugins.lock.json
 .sprout.json
 sprout-*-outputs.json
+sprout.build-config.json
 !/.vscode/settings.json
 !/.projenrc.ts

@@ -155,6 +155,11 @@ project.gitignore.exclude(
   // CDK deploy outputs written by `cdk deploy --outputs-file …`. Contain
   // real API + CloudFront domains; never commit.
   'sprout-*-outputs.json',
+  // Per-build configuration baked into the .dmg via esbuild `define:`
+  // (Auth0 tenant URL + client ID + endpoint URLs). Different per
+  // developer / per environment; check in `sprout.build-config.example.json`
+  // instead and let each builder copy it. See docs/PACKAGING.md.
+  'sprout.build-config.json',
 );
 
 project.addFields({ type: 'module' });
