@@ -30,7 +30,14 @@ export function Onboarding({ onProjectOpen }: OnboardingProps): React.ReactEleme
         const s = await window.sprout.invoke('onboarding:status');
         if (cancelled) return;
         setStatus(s);
-        if (!s.setupComplete) {
+        // Re-show Welcome when auth state is invalid for this build mode.
+        // The user can land here with setupComplete=true from a previous
+        // MOCK_AUTH=1 session, then re-launch in real-auth mode without an
+        // Auth0 token — at which point every cloud call would 401. Detect
+        // that case (not signed in AND not explicitly guest) and force a
+        // re-onboarding pass that includes the Sign In button.
+        const needsAuth = !s.signedIn && !s.guest;
+        if (!s.setupComplete || needsAuth) {
           setStage(s.guest || s.signedIn ? 'pick-root' : 'welcome');
         } else {
           const list = await window.sprout.invoke('projects:list');

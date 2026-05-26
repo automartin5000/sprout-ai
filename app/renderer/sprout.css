@@ -1,6 +1,6 @@
 /* ─────────────────────────────────────────────────────────────────
-   Sprout — design tokens + component styles
-   warm cream + terracotta editorial feel
+   Sprout — mac-native chrome with warm cream + terracotta palette
+   (Phase 6: ported from /tmp/sprout-v2-design/styles-v2.css)
    ───────────────────────────────────────────────────────────────── */
 
 :root {
@@ -16,23 +16,42 @@
   --line: #d9cfb8;
   --line-soft: #e6dcc4;
 
+  /* Mac chrome — sits just darker than the content surface so the titlebar
+   * reads as a distinct macOS toolbar instead of a flat header. The
+   * gradient between --chrome and --chrome-bottom is the "unified titlebar"
+   * look you see in Mail / Notes / Finder. */
+  --chrome:        #ebe3d2;
+  --chrome-bottom: #ddd4bf;
+  --chrome-ink:    #3a3328;
+  --chrome-line:   #c4b89c;
+
   --accent: #c8612e;
   --accent-soft: #f1c8a8;
   --accent-ink: #6e2c0d;
+
+  /* Paired blue used for sandbox-track affordances (e.g. Share preview to
+   * sandbox). Same saturation profile as --accent so the two buttons feel
+   * like two halves of one palette: sandbox=blue, prod=terracotta. */
+  --accent-blue: #2e6ec8;
+  --accent-blue-soft: #a8c8f1;
+  --accent-blue-ink: #0d3a6e;
 
   --ok: #4a7a3b;
   --warn: #b07a1a;
   --err: #b03a2a;
 
-  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
-  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Pure macOS system font stack (Phase 6). Geist removed — SF renders
+   * natively on macOS at zero load cost. Instrument Serif italic stays
+   * for editorial accents (modal titles, brand). */
+  --font-sans:  -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-serif: "Instrument Serif", "New York", "Iowan Old Style", Georgia, serif;
+  --font-mono:  ui-monospace, "SF Mono", "Menlo", Monaco, monospace;
 
-  --r-xs: 6px;
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
-  --r-xl: 22px;
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
 
   --u: 4px;
   --pad: 16px;
@@ -40,19 +59,25 @@
 }
 
 [data-dark="true"] {
-  --bg: #14110c;
-  --bg-soft: #1c1812;
-  --surface: #1a1610;
-  --surface-2: #221d16;
-  --surface-3: #2a241b;
+  --bg: #1c1812;
+  --bg-soft: #221d16;
+  --surface: #221d16;
+  --surface-2: #2a241b;
+  --surface-3: #332c21;
   --ink: #f1ead8;
   --ink-2: #d9cfb8;
   --ink-3: #a89e87;
   --ink-4: #6a6152;
-  --line: #2e2820;
-  --line-soft: #25201a;
+  --line: #3a3328;
+  --line-soft: #2e2820;
+  --chrome:        #2a241b;
+  --chrome-bottom: #221d16;
+  --chrome-ink:    #d9cfb8;
+  --chrome-line:   #3a3328;
   --accent-soft: #5a2e15;
   --accent-ink: #f1c8a8;
+  --accent-blue-soft: #15355a;
+  --accent-blue-ink: #a8c8f1;
 }
 
 [data-density="compact"] { --pad: 10px; --gap: 8px; }
@@ -81,77 +106,139 @@ input, textarea { font-family: inherit; }
   height: 100vh;
 }
 
-/* Top bar */
+/* Top bar — mac-style unified titlebar */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
+  gap: 8px;
+  padding: 0 12px;
+  /* Mac chrome gradient: the unified titlebar look. Subtle vertical
+   * shading just darker than the content surface. */
+  background: linear-gradient(180deg, var(--chrome) 0%, var(--chrome-bottom) 100%);
+  border-bottom: 1px solid var(--chrome-line);
   position: relative;
   z-index: 10;
   -webkit-app-region: drag;
+  user-select: none;
 }
 .topbar > * { -webkit-app-region: no-drag; }
 
+/* App title — centered absolutely so the layout works regardless of left/
+ * right content. Pointer-events: none so it can never block clicks on
+ * buttons that flow underneath it.
+ *
+ * Format: <b>Sprout</b><span class="sep">—</span><span class="sub">{name}</span>
+ *         <span class="live-dot" /> (optional, when preview is live) */
+.app-title {
+  position: absolute;
+  left: 0; right: 0;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--chrome-ink);
+  pointer-events: none;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app-title b { font-weight: 600; }
+.app-title .sep { color: var(--ink-4); margin: 0 6px; font-weight: 400; }
+.app-title .sub { color: var(--ink-3); font-weight: 400; }
+.app-title .live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  margin-left: 6px;
+  box-shadow: 0 0 6px color-mix(in oklab, var(--ok) 50%, transparent);
+  vertical-align: middle;
+}
+
+/* Back-to-projects icon button. Sits at the left after the traffic-lights
+ * gutter (~68px on macOS). Tooltip + ⌘[ keyboard shortcut hint the
+ * keyboard alternative since we no longer show the explicit crumb. */
+.topbar-back {
+  margin-left: 68px;
+}
+
+/* `.brand` / `.brand-mark` are used by the onboarding wizard's welcome
+ * screen (see Onboarding.tsx). The topbar dropped them in Phase 6 in
+ * favor of the centered .app-title, but the wizard still needs the
+ * editorial Sprout wordmark for first-launch branding. */
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
   font-family: var(--font-serif);
-  font-size: 20px;
+  font-size: 22px;
   font-style: italic;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
   color: var(--ink);
-  margin-left: 68px; /* macOS traffic lights */
 }
 .brand-mark {
   width: 24px;
   height: 24px;
   display: grid;
   place-items: center;
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), #8c4a23);
   border-radius: 50%;
   color: #fff;
+  flex-shrink: 0;
 }
-
-.crumb {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--ink-3);
-}
-.crumb b { color: var(--ink); font-weight: 500; }
-.crumb-sep { color: var(--ink-4); }
 
 .topbar-spacer { flex: 1; }
 
+/* General button — mac toolbar style: 0.5px hairline border, subtle
+ * vertical gradient, inset white highlight on top so it picks up "light
+ * from above" like a native NSButton. Hover dims slightly via brightness;
+ * active dims more. */
 .btn {
   appearance: none;
-  border: 1px solid var(--line);
-  background: var(--surface);
+  border: 0.5px solid rgba(0,0,0,.18);
+  background: linear-gradient(180deg, #fbf7ed 0%, #ebe3d2 100%);
   color: var(--ink-2);
-  height: 30px;
-  padding: 0 12px;
-  border-radius: var(--r-sm);
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
   font-size: 12.5px;
   font-weight: 500;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: background .12s, border-color .12s, color .12s;
+  box-shadow: 0 1px 0 rgba(255,255,255,.5) inset;
+  transition: filter .1s;
 }
-.btn:hover { background: var(--surface-2); color: var(--ink); border-color: var(--line); }
-.btn-ghost { background: transparent; border-color: transparent; color: var(--ink-3); }
-.btn-ghost:hover { background: var(--surface-2); color: var(--ink); border-color: transparent; }
-.btn-primary { background: var(--ink); border-color: var(--ink); color: var(--bg); }
-.btn-primary:hover { background: var(--ink-2); border-color: var(--ink-2); color: var(--bg); }
-.btn-accent { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn-accent:hover { filter: brightness(1.05); }
-.btn-icon { width: 30px; padding: 0; justify-content: center; }
-.btn-sm { height: 26px; padding: 0 10px; font-size: 12px; }
+.btn:hover { filter: brightness(.97); }
+.btn:active { filter: brightness(.92); }
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--ink-3);
+}
+.btn-ghost:hover { background: rgba(0,0,0,.05); color: var(--ink); filter: none; }
+.btn-primary {
+  background: linear-gradient(180deg, #3a3328 0%, #1e1a14 100%);
+  color: var(--bg);
+  border-color: rgba(0,0,0,.4);
+}
+.btn-accent {
+  background: linear-gradient(180deg, #d97740 0%, #c8612e 100%);
+  color: #fff;
+  border-color: rgba(0,0,0,.22);
+  text-shadow: 0 -1px 0 rgba(0,0,0,.15);
+}
+.btn-accent-blue {
+  background: linear-gradient(180deg, #3989de 0%, #2e6ec8 100%);
+  color: #fff;
+  border-color: rgba(0,0,0,.22);
+  text-shadow: 0 -1px 0 rgba(0,0,0,.15);
+}
+.btn-sm { height: 22px; padding: 0 8px; font-size: 11.5px; border-radius: 5px; }
+.btn-icon { width: 26px; padding: 0; justify-content: center; }
+.btn-sm.btn-icon { width: 22px; }
 
 .harness-select {
   appearance: none;
@@ -213,11 +300,13 @@ input, textarea { font-family: inherit; }
   overflow: hidden;
 }
 
-/* ── Chat ──────────────────────────────────────────────────── */
+/* ── Chat — mac sidebar feel ───────────────────────────────── */
 .chat {
   display: grid;
   grid-template-rows: auto 1fr auto auto;
-  background: var(--surface);
+  /* Subtle vertical cream gradient — same look as Mail.app / Notes.app
+   * sidebars. Reads as a distinct "panel" without needing a hard border. */
+  background: linear-gradient(180deg, #f1ead8 0%, #e8dfca 100%);
   border-right: 1px solid var(--line);
   min-height: 0;
 }
@@ -288,38 +377,52 @@ input, textarea { font-family: inherit; }
   margin: 0;
 }
 
-/* Messages */
+/* Messages — mac-style (like Messages.app): user bubbles are filled
+ * terracotta on the right, sprout bubbles are flat cream cards on the
+ * left. No avatars; the author label carries identity. */
 .msg {
   display: flex;
-  gap: 10px;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
 }
-.msg-bubble { flex: 1; min-width: 0; }
+.msg-bubble { min-width: 0; }
 .msg-author {
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: 500;
+  letter-spacing: 0.01em;
   color: var(--ink-3);
-  margin-bottom: 5px;
   display: flex;
   align-items: center;
   gap: 6px;
-  text-transform: uppercase;
+  padding: 0 4px;
+  text-transform: none;
 }
+.msg-author b { color: var(--ink); font-weight: 600; }
 .msg-author .dot {
-  width: 4px; height: 4px; border-radius: 50%;
+  width: 3px; height: 3px; border-radius: 50%;
   background: var(--ink-4);
 }
+.msg-author .time { color: var(--ink-4); }
 .msg-content {
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.5;
   color: var(--ink-2);
   word-wrap: break-word;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 0.5px solid rgba(0,0,0,.08);
+  box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 1px 2px rgba(0,0,0,.03);
 }
 .msg-content p { margin: 0 0 6px; }
 .msg-content p:last-child { margin-bottom: 0; }
 .msg-content strong { color: var(--ink); font-weight: 600; }
-.msg-content em { font-style: italic; }
+.msg-content em {
+  font-family: var(--font-serif);
+  font-style: italic;
+  color: var(--ink);
+  font-size: 14px;
+}
 .msg-content code {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -330,11 +433,16 @@ input, textarea { font-family: inherit; }
 }
 
 .msg.user .msg-content {
-  background: var(--surface-2);
-  padding: 10px 12px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, #d97740 0%, #c8612e 100%);
+  color: #fff;
+  border-color: rgba(0,0,0,.18);
+  align-self: flex-end;
+  max-width: 88%;
+  text-shadow: 0 -1px 0 rgba(0,0,0,.08);
 }
+.msg.user .msg-content strong { color: #fff; }
+.msg.user .msg-content em { color: #fff; }
+.msg.user .msg-author { justify-content: flex-end; }
 .msg.error .msg-content {
   background: color-mix(in oklab, var(--err) 10%, transparent);
   padding: 10px 12px;
@@ -345,13 +453,14 @@ input, textarea { font-family: inherit; }
   font-size: 12px;
 }
 
-/* Action card */
+/* Action card — looks like a mac receipt: thin 0.5px outline, slightly
+ * translucent fill, dashed dividers between rows. */
 .action-card {
   margin-top: 8px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  border-radius: var(--r-md);
+  border-radius: 10px;
   overflow: hidden;
+  background: rgba(255,255,255,.5);
+  border: 0.5px solid rgba(0,0,0,.1);
 }
 .action-card-head {
   display: flex;
@@ -359,10 +468,10 @@ input, textarea { font-family: inherit; }
   gap: 8px;
   padding: 7px 10px;
   font-size: 11.5px;
-  color: var(--ink-3);
-  font-family: var(--font-mono);
-  border-bottom: 1px solid var(--line-soft);
-  background: var(--surface-2);
+  color: var(--ink-2);
+  font-weight: 500;
+  border-bottom: 0.5px solid rgba(0,0,0,.06);
+  background: rgba(0,0,0,.02);
 }
 .pulse-dot {
   width: 6px; height: 6px; border-radius: 50%;
@@ -528,6 +637,27 @@ input, textarea { font-family: inherit; }
 }
 .composer-tools .left { display: flex; align-items: center; gap: 2px; }
 .composer-tools .right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+/* Composer tool buttons (paperclip / image / mic). Look like translucent
+ * mac toolbar buttons but at icon-only size. Disabled state is dimmed but
+ * still visible so users see the available surface. */
+.tool-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--ink-3);
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background .1s, color .1s;
+}
+.tool-btn:hover:not(:disabled) { background: rgba(0,0,0,.06); color: var(--ink); }
+.tool-btn:disabled { color: var(--ink-4); cursor: not-allowed; opacity: .65; }
+.tool-btn:disabled:hover { background: transparent; }
+
 .send-btn {
   appearance: none;
   border: 0;
@@ -574,7 +704,10 @@ input, textarea { font-family: inherit; }
 /* ── Preview column ────────────────────────────────────────── */
 .preview-col {
   display: grid;
-  grid-template-rows: 44px 1fr;
+  /* 44px preview bar + flex stage + 64px save-points timeline. The
+   * 64px must match TIMELINE_HEIGHT in app/main/index.ts so the
+   * WebContentsView's bottom clips above the timeline. */
+  grid-template-rows: 44px 1fr 64px;
   min-height: 0;
   background: var(--bg-soft);
 }
@@ -587,47 +720,85 @@ input, textarea { font-family: inherit; }
   border-bottom: 1px solid var(--line);
   background: var(--bg);
 }
+/* Mac-style segmented control. Inset darker background, hairline outline,
+ * white pill on the active tab with a tiny drop-shadow. Same shape as
+ * native NSSegmentedControl. */
 .view-tabs {
   display: flex;
-  background: var(--surface-2);
-  border-radius: var(--r-sm);
+  background: rgba(0,0,0,.06);
+  border-radius: 6px;
   padding: 2px;
-  gap: 1px;
+  gap: 0;
+  border: 0.5px solid rgba(0,0,0,.08);
 }
 .view-tab {
   appearance: none;
   border: 0;
   background: transparent;
-  color: var(--ink-3);
-  font-size: 12px;
+  color: var(--ink-2);
+  font-size: 11.5px;
   font-weight: 500;
   font-family: var(--font-sans);
-  padding: 4px 11px;
-  border-radius: 6px;
+  padding: 3px 10px;
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
+  height: 20px;
   cursor: pointer;
   transition: background .1s, color .1s;
 }
 .view-tab[data-active="true"] {
-  background: var(--bg);
+  background: #fff;
   color: var(--ink);
-  box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 0 0 1px var(--line-soft);
+  box-shadow: 0 1px 1px rgba(0,0,0,.08), 0 0 0 0.5px rgba(0,0,0,.1);
 }
+
+/* Friendly status pill — replaces the URL pill. Shows project name + a
+ * non-technical status string ("· live · auto-saved"). Green glow dot
+ * signals "running". */
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,.6);
+  border: 0.5px solid rgba(0,0,0,.1);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  height: 22px;
+  white-space: nowrap;
+}
+.status-pill .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--ok) 50%, transparent);
+}
+.status-pill .title {
+  font-weight: 500;
+  color: var(--ink);
+}
+.status-pill .meta {
+  color: var(--ink-3);
+}
+
+/* Old class kept as an alias for backwards-compatibility with any
+ * lingering references; new code should use .status-pill. */
 .url-pill {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 4px 10px;
-  font-family: var(--font-mono);
+  background: rgba(255,255,255,.6);
+  border: 0.5px solid rgba(0,0,0,.1);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-family: var(--font-sans);
   font-size: 11.5px;
-  color: var(--ink-3);
-  min-width: 160px;
-  max-width: 260px;
+  color: var(--ink-2);
+  height: 22px;
+  white-space: nowrap;
 }
 .url-pill .path { color: var(--ink); }
 .preview-bar-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
@@ -638,6 +809,102 @@ input, textarea { font-family: inherit; }
   padding: 20px;
   display: grid;
   place-items: start center;
+}
+/* Phone-mode stage frame. The native WebContentsView is constrained to
+ * PHONE_WIDTH by the main process; this CSS draws the surrounding visual
+ * frame (rounded corners + outer drop shadow) so the column reads as a
+ * device. The view itself sits inside this frame, not on top of it. */
+.preview-stage.is-phone::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  transform: translateX(-50%);
+  width: 390px;
+  height: calc(100% - 36px);
+  border-radius: 28px;
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.18),
+    0 16px 40px -10px rgba(0,0,0,.18),
+    inset 0 0 0 8px #111;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Save points timeline ──────────────────────────────────── */
+.timeline {
+  border-top: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, var(--chrome) 0%, var(--chrome-bottom) 100%);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow-x: auto;
+  min-height: 0;
+}
+.timeline-label {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-weight: 500;
+  flex-shrink: 0;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.timeline-track {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.timeline-track::-webkit-scrollbar { height: 4px; }
+.timeline-track::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+.timeline-empty {
+  font-size: 11px;
+  color: var(--ink-4);
+  font-style: italic;
+}
+.checkpoint {
+  flex-shrink: 0;
+  width: 84px;
+  border: 0.5px solid rgba(0,0,0,.14);
+  border-radius: 6px;
+  background: rgba(255,255,255,.55);
+  padding: 3px;
+  text-align: left;
+  position: relative;
+  transition: all .12s;
+  cursor: pointer;
+  font-family: inherit;
+}
+.checkpoint:hover { background: rgba(255,255,255,.9); }
+.checkpoint[data-active="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 25%, transparent);
+}
+.checkpoint-snap {
+  height: 32px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  margin-bottom: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.checkpoint-label {
+  font-size: 10px;
+  color: var(--ink);
+  line-height: 1.2;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checkpoint-time {
+  font-size: 9px;
+  color: var(--ink-4);
 }
 .preview-placeholder {
   background: var(--surface);
@@ -1089,9 +1356,9 @@ input, textarea { font-family: inherit; }
 .modal-title {
   font-family: var(--font-serif);
   font-style: italic;
-  font-size: 26px;
+  font-size: 28px;
   line-height: 1.1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
   color: var(--ink);
   margin: 0;
 }

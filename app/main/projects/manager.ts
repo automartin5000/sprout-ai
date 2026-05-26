@@ -1,10 +1,16 @@
 import { app } from 'electron';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { v4 as uuid } from 'uuid';
+import { customAlphabet } from 'nanoid';
 import type { Project } from '../../../shared/api-contract.js';
 import { Worktree } from './worktree.js';
 import { DevServer } from './dev-server.js';
+
+// Crockford base32 (no 0/O/1/I/L) — matches the Lambda@Edge router's
+// PROJECT_ID_PATTERN. 8 chars gives ~10^12 keyspace, plenty for a single
+// user's projects. Existing projects with UUID-format IDs continue to work
+// (the edge router accepts both shapes).
+const generateProjectId = customAlphabet('0123456789ABCDEFGHJKMNPQRSTVWXYZ', 8);
 
 export interface ProjectRecord {
   project: Project;
@@ -51,7 +57,7 @@ export class ProjectManager {
     const worktree = await Worktree.create(projectRoot);
 
     const project: Project = {
-      projectId: uuid(),
+      projectId: generateProjectId(),
       ownerSub: 'local',
       name: input.name,
       slug: safeSlug,

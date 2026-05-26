@@ -100,13 +100,16 @@ export class Auth0Native {
         resolve({ code, redirectUri });
       });
 
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address();
-        if (!address || typeof address !== 'object') {
-          reject(new Error('failed to bind loopback server'));
-          return;
-        }
-        redirectUri = `http://127.0.0.1:${address.port}/callback`;
+      // Auth0 requires EXACT port match on registered loopback callbacks
+      // (the historical "any port on localhost" wildcard was tightened to
+      // mitigate PKCE-against-malicious-local-process attacks). So we bind a
+      // fixed high port that's pre-registered in the Auth0 Native app's
+      // allowed callbacks list. If the port is already in use, login fails
+      // fast with a clear error rather than picking a random port that
+      // Auth0 would reject anyway.
+      const LOOPBACK_PORT = 47820;
+      server.listen(LOOPBACK_PORT, '127.0.0.1', () => {
+        redirectUri = `http://localhost:${LOOPBACK_PORT}/callback`;
         const url = new URL(`https://${this.opts.domain}/authorize`);
         url.searchParams.set('response_type', 'code');
         url.searchParams.set('client_id', this.opts.clientId);

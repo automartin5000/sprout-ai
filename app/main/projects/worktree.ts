@@ -51,8 +51,62 @@ export class Worktree {
     };
   }
 
+  /**
+   * Roll the working tree back to a previous save point. NON-DESTRUCTIVE —
+   * `git reset --hard` would orphan every commit after the target hash
+   * (they'd survive in reflog for ~30 days but disappear from `git log`
+   * and the Sprout timeline; users see them as "gone"). Instead we:
+   *
+   *   1. Stage + commit any uncommitted working-tree changes so they
+   *      don't get clobbered by the upcoming `checkout`.
+   *   2. `git checkout <hash> -- .` copies the target's tree into the
+   *      working dir WITHOUT moving HEAD.
+   *   3. Commit as a new HEAD with a `rolled back to <subject>` message
+   *      so the timeline shows where the user went.
+   *
+   * Net result: every prior save point is still reachable from HEAD; the
+   * timeline grows by 1-2 commits per round-trip (1 for the rollback
+   * marker, +1 for the pre-snapshot if there were uncommitted edits).
+   * `git log` from HEAD continues to show the full history.
+   */
   async restore(hash: string): Promise<void> {
-    await runGit(this.root, ['reset', '--hard', hash]);
+    // Get the target's subject up front so the rollback commit message
+    // names it (the user sees "rolled back to: <thing>" in the timeline).
+    const subjectRes = await runGitCapture(this.root, [
+      'log', '-1', '--pretty=format:%s', hash,
+    ]);
+    const targetSubject = subjectRes.stdout.trim().replace(/^checkpoint:\s*/, '') || hash.slice(0, 7);
+
+    // 1. Snapshot any uncommitted edits so they survive the checkout.
+    //    `commit --allow-empty` is a no-op when the tree is clean, so it
+    //    won't add noise if there's nothing to save.
+    await runGit(this.root, ['add', '-A']);
+    await runGitCapture(this.root, [
+      'commit',
+      '--allow-empty',
+      '-m',
+      'checkpoint: snapshot before going back',
+    ]);
+
+    // 2. Replace the index AND working tree with the target's tree, but
+    //    leave HEAD where it is. `read-tree --reset -u` is the right
+    //    primitive: unlike `checkout <hash> -- .`, it DELETES files that
+    //    don't exist in the target (so going back from C → A removes
+    //    the b.txt and c.txt the user added in between). `--reset`
+    //    permits overwriting changes already in the index — the
+    //    snapshot commit in step 1 captured them, so it's safe.
+    await runGit(this.root, ['read-tree', '--reset', '-u', hash]);
+
+    // 3. Commit the rollback as a new save point at the branch tip.
+    //    `allow-empty` covers the case where the user clicked the
+    //    already-current save point (no diff, but they still want a
+    //    visible marker in the timeline).
+    await runGitCapture(this.root, [
+      'commit',
+      '--allow-empty',
+      '-m',
+      `checkpoint: rolled back to "${targetSubject}"`,
+    ]);
   }
 
   async log(limit = 50): Promise<CheckpointInfo[]> {

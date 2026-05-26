@@ -4,6 +4,7 @@
 !/.projen/deps.json
 !/.projen/files.json
 !/package.json
+!/LICENSE
 !/.npmignore
 logs
 *.log
@@ -60,5 +61,7 @@ cdk.context.json
 playwright-report
 test-results
 plugins.lock.json
+.sprout.json
+sprout-*-outputs.json
 !/.vscode/settings.json
 !/.projenrc.ts

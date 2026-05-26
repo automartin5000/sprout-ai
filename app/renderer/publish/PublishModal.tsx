@@ -86,14 +86,14 @@ export function PublishModal({
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <div className="modal-eyebrow">
-            {phase === 'live' ? 'Live' :
+            {phase === 'live' ? 'Live in sandbox' :
               phase === 'failed' ? 'Something went wrong' :
-              'Publishing…'}
+              'Sharing to sandbox…'}
           </div>
           <h2 className="modal-title">
-            {phase === 'live' ? "It's live."
-              : phase === 'failed' ? "Couldn't publish."
-              : `Sending ${projectName} to the cloud.`}
+            {phase === 'live' ? "It's live in the sandbox."
+              : phase === 'failed' ? "Couldn't share to sandbox."
+              : `Sending ${projectName} to the sandbox.`}
           </h2>
         </div>
         <div className="modal-body">
@@ -107,7 +107,7 @@ export function PublishModal({
               color: 'var(--ink-3)',
               lineHeight: 1.55,
             }}>
-              First publish can take a few minutes while we set up your app's home on the internet. Future publishes will finish in under a minute.
+              First share can take a few minutes while we set up your app's home in the sandbox. Future shares will finish in under a minute.
             </div>
           )}
 

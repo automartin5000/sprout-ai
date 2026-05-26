@@ -1,12 +1,22 @@
 /**
  * Sprout shared runtime Lambda.
  *
- * One Node 24 Lambda hosts ALL user projects. The Lambda@Edge router sets the
- * `X-Sprout-Project-Id` header (which clients can't spoof — see edge-router.ts)
- * and forwards the request here. We look up the project's current version in
- * DynamoDB, fetch its `server.zip` from the code bucket, unzip into /tmp, and
- * dispatch to the project's `handler` export. Hot path is ~1ms; first hit per
- * execution context is ~100-200ms.
+ * One Node 24 Lambda hosts ALL user projects. CloudFront's `[*]/api/[*]` cache
+ * behavior forwards `/<projectId>/api/<rest>` requests here. We parse the
+ * projectId out of the path (first segment), look up the project's current
+ * version in DynamoDB, fetch its `server.zip` from the code bucket, unzip
+ * into /tmp, and dispatch to the project's `handler` export with the URL
+ * stripped of the `/<projectId>` prefix (so the project's Hono app sees its
+ * own routes as `/api/...`).
+ *
+ * Why parse from the URL and not from a Lambda@Edge-set header? Lambda@Edge
+ * VIEWER_REQUEST functions break OAC SigV4 signing on POST/PUT requests to
+ * Lambda Function URLs. CloudFront signs the body after the edge function
+ * runs, but the Function URL recomputes a slightly different body hash on
+ * receipt and returns 403 "signature does not match". Keeping the api path
+ * un-rewritten by Lambda@Edge avoids the bug entirely.
+ *
+ * Hot path is ~1ms; first hit per execution context is ~100-200ms.
  *
  * Constraints:
  *  - No env var configuration of the project handler itself; we mutate
@@ -20,8 +30,8 @@
  *    simple. esbuild emits CJS via the build script.
  */
 import * as fs from 'node:fs/promises';
-import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
+import AdmZip from 'adm-zip';
 import { GetObjectCommand, NoSuchKey, S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb';
 
@@ -46,21 +56,62 @@ type LambdaEvent = {
   requestContext?: { http?: { method?: string; path?: string } };
 } & Record<string, unknown>;
 
+// Accepts 8-char Crockford codes OR UUIDs with hyphens. Same shape as the
+// edge-router's pattern (kept in sync intentionally — both layers validate).
+const PROJECT_ID_PATTERN = /^([0-9A-HJKMNP-TV-Z]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
 export const handler = async (event: LambdaEvent): Promise<unknown> => {
   if (event?.warmup) {
     return { warmup: 'ok' };
   }
 
-  const projectId =
-    event.headers?.['x-sprout-project-id'] ??
-    event.headers?.['X-Sprout-Project-Id'];
-  if (!projectId) {
-    return {
-      statusCode: 400,
-      headers: { 'Content-Type': 'text/plain' },
-      body: 'missing X-Sprout-Project-Id',
-    };
+  // Parse projectId out of the URL. CloudFront forwards `/<projectId>/api/...`
+  // verbatim (no Lambda@Edge rewrite on the api behavior — see file header).
+  // Some Lambda Function URL events also expose `rawPath`; fall back to
+  // requestContext.http.path. Header form is kept as a last-resort fallback
+  // for direct-invoke / test scenarios where the URL might not be in the
+  // expected shape.
+  const rawPath = event.rawPath ?? event.requestContext?.http?.path ?? '';
+  const segments = rawPath.split('/').filter(Boolean);
+  let projectId = segments[0];
+  let appPath = '/' + segments.slice(1).join('/');
+  if (!projectId || !PROJECT_ID_PATTERN.test(projectId)) {
+    // Allow direct-invoke flows (e.g., warmup pings, future internal RPC) to
+    // pass the project id via header. Not used by the CloudFront-fronted path.
+    const headerId = event.headers?.['x-sprout-project-id']
+      ?? event.headers?.['X-Sprout-Project-Id'];
+    if (headerId && PROJECT_ID_PATTERN.test(headerId)) {
+      projectId = headerId;
+      // Header-mode: trust the rawPath as-is (no prefix to strip).
+      appPath = rawPath || '/';
+    } else {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'missing or invalid projectId in URL',
+      };
+    }
   }
+
+  // Best-effort tenancy: set the per-project env vars before doing anything
+  // that touches the project's bundle. These are visible to the project's
+  // handler via process.env. They are NOT isolated across concurrent
+  // invocations in the same execution context — but Lambda serializes
+  // invocations per container, so within a single request this is safe.
+  // Setting these early (pre-dispatch) means any code paths that re-read
+  // env vars during bundle init (e.g., aws-sdk client construction inside
+  // a project's top-level scope) get the right values.
+  //
+  // The five SPROUT_* names below are the env-var compatibility contract
+  // shared with the standalone-prod path. AI-generated user code reads these
+  // names; the standalone scaffold (plugins/sprout-cicd-github/templates/
+  // infra/lib/sprout-app-stack.ts) sets the same five with mode='prod' so
+  // the same source code runs unchanged in both shapes.
+  process.env.SPROUT_MODE = 'sandbox';
+  process.env.SPROUT_PROJECT_ID = projectId;
+  process.env.SPROUT_DATA_TABLE = process.env.TABLE_NAME ?? '';
+  process.env.SPROUT_ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
+  process.env.SPROUT_UPLOADS_BUCKET = process.env.UPLOADS_BUCKET ?? '';
 
   let fn: ProjectEntry['handler'];
   try {
@@ -74,17 +125,23 @@ export const handler = async (event: LambdaEvent): Promise<unknown> => {
     };
   }
 
-  // Best-effort tenancy: set the per-project env vars before invoking. These
-  // are visible to the project's handler via process.env. They are NOT isolated
-  // across concurrent invocations in the same execution context — but Lambda
-  // serializes invocations per container, so within a single request this is
-  // safe.
-  process.env.SPROUT_PROJECT_ID = projectId;
-  process.env.SPROUT_DATA_TABLE = process.env.TABLE_NAME ?? '';
-  process.env.SPROUT_ASSETS_BUCKET = process.env.ASSETS_BUCKET ?? '';
+  // Rewrite the event so the project's Hono app sees its own URL space —
+  // `/api/items`, not `/<projectId>/api/items`. Same shape transforms the
+  // Lambda@Edge router used to do for non-api requests.
+  const projectEvent: LambdaEvent = {
+    ...event,
+    rawPath: appPath,
+    requestContext: {
+      ...event.requestContext,
+      http: {
+        ...event.requestContext?.http,
+        path: appPath,
+      },
+    },
+  };
 
   try {
-    return await fn(event);
+    return await fn(projectEvent);
   } catch (err) {
     console.error(`[${projectId}] project handler threw`, err);
     return {
@@ -156,10 +213,13 @@ async function loadVersionInto(projectId: string, version: number, dir: string):
   const key = `${projectId}/v${version}/server.zip`;
   try {
     const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-    const zipPath = `${dir}/server.zip`;
-    await fs.writeFile(zipPath, await streamToBuffer(res.Body as Readable));
-    await runUnzip(zipPath, dir);
-    await fs.unlink(zipPath).catch(() => {/* swallow */});
+    // Use a pure-JS unzip (adm-zip) — AWS Lambda's Node 24 base image does
+    // NOT ship the `unzip` binary, so the previous `spawn('unzip', ...)`
+    // failed with ENOENT and the runtime returned 502 "project unavailable"
+    // even when the bundle was correctly uploaded. adm-zip is ~25KB, no
+    // native deps, works in the bundled CJS runtime image.
+    const buf = await streamToBuffer(res.Body as Readable);
+    new AdmZip(buf).extractAllTo(dir, /* overwrite */ true);
   } catch (err) {
     if (isNotFound(err)) {
       console.log(`[${projectId}] no bundle at s3://${bucket}/${key}; serving placeholder`);
@@ -182,14 +242,6 @@ function isNotFound(err: unknown): boolean {
   if (e?.name === 'NoSuchKey' || e?.Code === 'NoSuchKey') return true;
   if (e?.$metadata?.httpStatusCode === 404) return true;
   return false;
-}
-
-function runUnzip(zipPath: string, dir: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const proc = spawn('unzip', ['-qq', '-o', zipPath, '-d', dir]);
-    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`unzip exited ${code}`))));
-    proc.on('error', reject);
-  });
 }
 
 async function streamToBuffer(r: Readable): Promise<Buffer> {

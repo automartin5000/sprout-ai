@@ -10,6 +10,10 @@
       "type": "build"
     },
     {
+      "name": "@types/adm-zip",
+      "type": "build"
+    },
+    {
       "name": "@types/aws-lambda",
       "type": "build"
     },
@@ -27,6 +31,10 @@
     },
     {
       "name": "@types/react-dom",
+      "type": "build"
+    },
+    {
+      "name": "@types/tar",
       "type": "build"
     },
     {
@@ -152,7 +160,16 @@
       "type": "runtime"
     },
     {
+      "name": "@github/copilot-sdk",
+      "version": "1.0.0-beta.4",
+      "type": "runtime"
+    },
+    {
       "name": "@hono/node-server",
+      "type": "runtime"
+    },
+    {
+      "name": "adm-zip",
       "type": "runtime"
     },
     {
@@ -191,6 +208,10 @@
     },
     {
       "name": "react-dom",
+      "type": "runtime"
+    },
+    {
+      "name": "tar",
       "type": "runtime"
     },
     {

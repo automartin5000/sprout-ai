@@ -17,7 +17,9 @@ const project = new awscdk.AwsCdkTypeScriptApp({
   buildCommand: undefined,
   depsUpgrade: false,
   github: false,
-  licensed: false,
+  licensed: true,
+  license: 'MIT',
+  copyrightOwner: 'Sprout contributors',
   sampleCode: false,
   vscode: true,
   eslint: true,
@@ -62,6 +64,12 @@ const project = new awscdk.AwsCdkTypeScriptApp({
     'nanoid',
     'zod',
     'uuid',
+    // Lambda-side ZIP/TAR extraction. Both are pure-JS (no native deps), tiny,
+    // and bundle cleanly via esbuild — required because AWS Lambda's Node 24
+    // base image does NOT ship the `unzip` binary, and we extract user-uploaded
+    // tarballs into per-file S3 objects at publish-complete time.
+    'adm-zip',
+    'tar',
 
     // Electron main / renderer
     'react',
@@ -71,6 +79,10 @@ const project = new awscdk.AwsCdkTypeScriptApp({
 
     // Optional harnesses (dynamically imported in adapters)
     '@anthropic-ai/claude-agent-sdk',
+    // GitHub Copilot SDK — TypeScript wrapper over the Copilot CLI via
+    // JSON-RPC. Beta as of Nov 2026; auto-spawns the user's installed
+    // `copilot` binary when the adapter creates a client.
+    '@github/copilot-sdk@1.0.0-beta.4',
 
     // Embedded local DynamoDB so user projects can use the real AWS SDK
     // against a transparent localhost endpoint while developing in Sprout.
@@ -92,6 +104,8 @@ const project = new awscdk.AwsCdkTypeScriptApp({
     // Types & utilities
     '@types/uuid',
     '@types/node',
+    '@types/tar',
+    '@types/adm-zip',
 
     // Test stack
     'vitest',
@@ -134,6 +148,13 @@ project.gitignore.exclude(
   'test-results',
   // Sanitization lockfile (regenerated each build)
   'plugins.lock.json',
+  // Local user/project state (Sprout's own onboarding state when running
+  // pj app:dev against the repo cwd). Contains the dev user's project list
+  // and shouldn't be committed.
+  '.sprout.json',
+  // CDK deploy outputs written by `cdk deploy --outputs-file …`. Contain
+  // real API + CloudFront domains; never commit.
+  'sprout-*-outputs.json',
 );
 
 project.addFields({ type: 'module' });
@@ -199,21 +220,30 @@ project.addTask('app:package', {
 });
 
 // ----- Lambda bundle task -----
-project.addTask('lambda:build', {
+const lambdaBuildTask = project.addTask('lambda:build', {
   description: 'Bundle the Hono Lambda with esbuild',
   exec: 'bunx tsx scripts/build-lambda.ts',
 });
 
 // ----- Runtime + Lambda@Edge bundle task -----
-project.addTask('runtime:build', {
+const runtimeBuildTask = project.addTask('runtime:build', {
   description: 'Bundle the shared runtime Lambda + Lambda@Edge router',
   exec: 'bunx tsx scripts/build-runtime.ts',
 });
 
 // ----- Wire the build order: lambda bundle + runtime bundle + app build before CDK synth -----
-project.compileTask.exec('bun run lambda:build');
-project.compileTask.exec('bun run runtime:build');
-project.compileTask.exec('bun run app:build');
+// Don't use `.exec('bun run <task-name>')` here — projen's auto-generated
+// package.json shim (`bun .projenrc.ts <task-name>`) only re-evaluates the
+// projenrc, it does NOT execute the task body. Result: silent stale bundles
+// shipped to AWS undetected. And `.spawn(task)` goes through the same shim.
+// The reliable form is `.exec('<the task's actual command>')`.
+project.compileTask.exec('bunx tsx scripts/build-lambda.ts');
+project.compileTask.exec('bunx tsx scripts/build-runtime.ts');
+project.compileTask.spawn(appBuildTask);
+// Suppress the now-unused task var warnings — keep them defined so the named
+// tasks still work standalone (`pj lambda:build`, `pj runtime:build`).
+void lambdaBuildTask;
+void runtimeBuildTask;
 
 // ----- CDK helpers -----
 project.cdkTasks.deploy.prependExec('echo "Deploying to $DEPLOY_ENV"');

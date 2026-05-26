@@ -12,12 +12,19 @@ export interface HarnessRegistryOpts {
 }
 
 /**
- * Resolve `@github/copilot-sdk` without loading it. The SDK is a heavy native
- * dep we never want to import eagerly; this just confirms it's installed so
- * we don't register an adapter that will throw on every chat message.
+ * Resolve `@github/copilot-sdk` without loading it. The SDK is a real npm
+ * package (TypeScript wrapper around the `copilot` CLI binary via JSON-RPC),
+ * but it can be absent in two distinct ways:
  *
- * Returns false when the SDK isn't on disk — including the common case where
- * the user has only `@anthropic-ai/claude-agent-sdk` installed.
+ *   1. The npm package itself isn't installed.
+ *   2. The package IS installed but the `copilot` CLI binary isn't on PATH
+ *      — in that case the SDK loads fine but `new CopilotClient()` will
+ *      fail to spawn its server at session-create time.
+ *
+ * This probe checks case 1 only. We register the adapter optimistically
+ * when the package is present; runtime failures from case 2 surface as
+ * error events in the chat UI with a clear message ("install the copilot
+ * binary from cli.github.com").
  */
 function isCopilotSdkInstalled(): boolean {
   try {
@@ -33,11 +40,12 @@ export class HarnessRegistry {
   private readonly adapters = new Map<string, HarnessAdapter>();
 
   constructor(private readonly opts: HarnessRegistryOpts) {
-    // Only register Copilot if its SDK is actually installed. Otherwise the
-    // adapter shows up in the AI dropdown but every chat message fails with
-    // "copilot SDK not available". Filtering at registration time keeps the
-    // UI honest — Copilot only appears as an option when it can actually
-    // run.
+    // Only register Copilot if @github/copilot-sdk is installed. The SDK
+    // is a real npm package (TypeScript wrapper around the `copilot` CLI
+    // via JSON-RPC). If it's missing the AI dropdown wouldn't show
+    // "Copilot" at all — keeping the UI honest. If the package is there
+    // but the `copilot` binary isn't on PATH, the adapter loads at boot
+    // but session creation fails with a clear error in the chat.
     if (isCopilotSdkInstalled()) {
       this.register(new CopilotAdapter({
         tokenProvider: opts.copilotTokenProvider,
@@ -57,26 +65,23 @@ export class HarnessRegistry {
   }
 
   /**
-   * Pick a sensible default adapter based on which credentials the user
-   * actually has available. Order:
-   *   1. Copilot — if GH token set
+   * Pick a sensible default adapter based on which tooling the user
+   * actually has installed. Order:
+   *   1. Copilot — if @github/copilot-sdk is installed. The SDK
+   *                self-authenticates via the bundled `copilot` CLI
+   *                (GitHub device-flow login on first run), so we don't
+   *                need a token env var to gate this anymore.
    *   2. Claude  — if ANTHROPIC_API_KEY set OR Claude Code is installed
-   *                (the SDK reads `claude login` OAuth creds from the OS
-   *                keychain, so an installed+logged-in Claude Code is
-   *                enough to authenticate)
-   *   3. Mock    — otherwise
+   *                (the SDK reads `claude login` OAuth creds from the
+   *                OS keychain, so an installed+logged-in Claude Code
+   *                is enough to authenticate).
+   *   3. Mock    — otherwise.
    *
    * We use `~/.claude/` existing as a cheap proxy for "Claude Code installed";
    * the SDK itself handles the actual keychain lookup at session start.
    */
   defaultAdapterId(): string {
-    // Copilot only counts if its SDK is actually loadable AND the user has
-    // a GH token. Without the SDK the adapter isn't even registered, so
-    // returning 'copilot' here would point users at a non-existent option.
-    if (
-      this.adapters.has('copilot') &&
-      (process.env.COPILOT_GITHUB_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN)
-    ) {
+    if (this.adapters.has('copilot')) {
       return 'copilot';
     }
     if (this.adapters.has('claude')) {

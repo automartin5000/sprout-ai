@@ -2,7 +2,12 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import matter from 'gray-matter';
 import type { LoadedAgent, LoadedSkill } from '../harness/types.js';
-import type { LoadedPlugin, PluginManifest, PluginPermissions } from './types.js';
+import type {
+  LoadedCicdProvider,
+  LoadedPlugin,
+  PluginManifest,
+  PluginPermissions,
+} from './types.js';
 
 export interface PluginDiscoveryOpts {
   bundledDir: string;
@@ -137,6 +142,31 @@ function parseToolList(raw: string | undefined): string[] {
   if (!raw) return [];
   if (raw.trim() === '*') return ['*'];
   return raw.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+/**
+ * Filter a set of discovered plugins down to the CI/CD providers — those
+ * whose manifest declares a `cicd:` block. Resolves relative template /
+ * script paths to absolute paths so callers don't have to know the plugin
+ * root.
+ *
+ * Sprout uses this to enumerate which deploy backends are available on this
+ * machine. Picking the *active* provider (when multiple are installed) is a
+ * separate concern handled by `deploy/provider-resolver.ts`.
+ */
+export function loadCicdProviders(plugins: LoadedPlugin[]): LoadedCicdProvider[] {
+  const providers: LoadedCicdProvider[] = [];
+  for (const plugin of plugins) {
+    const cicd = plugin.manifest.cicd;
+    if (!cicd) continue;
+    providers.push({
+      pluginName: plugin.manifest.name,
+      manifest: cicd,
+      templatesDir: path.resolve(plugin.root, cicd.templatesDir),
+      bootstrapScript: path.resolve(plugin.root, cicd.bootstrapScript),
+    });
+  }
+  return providers;
 }
 
 /**

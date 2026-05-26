@@ -1,0 +1,27 @@
+// Placeholder Jenkinsfile — replace with the real corp pipeline definition
+// when packaging the actual sprout-cicd-jenkins plugin for distribution.
+//
+// Expected stages (mirror the GitHub variant's workflow set):
+//
+//   1. Checkout
+//   2. Install (corp internal package manager / corp Bun setup)
+//   3. Build app
+//   4. CDK synth (dev + prod)
+//   5. On a PR branch: deploy ephemeral env, post URL to the PR
+//   6. On main: deploy prod, return URL via Jenkins build artifacts
+//
+// The corp internal Jenkins shared libraries cover OIDC + role-assume to AWS,
+// secrets retrieval from Vault, and the Slack/Teams post-deploy notifications.
+//
+// See RUNBOOK-CICD-JENKINS.md for the full contract.
+
+pipeline {
+  agent any
+  stages {
+    stage('placeholder') {
+      steps {
+        echo 'Replace this Jenkinsfile with the corp pipeline definition.'
+      }
+    }
+  }
+}

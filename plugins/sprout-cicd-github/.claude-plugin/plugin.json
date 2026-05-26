@@ -1,0 +1,12 @@
+{
+  "name": "sprout-cicd-github",
+  "description": "Sprout deploy provider — pushes the project to GitHub and wires GitHub Actions to deploy to AWS via projen + CDK. Bundled with Sprout for personal/public-GitHub installs.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "cicd": {
+    "label": "GitHub Actions",
+    "templatesDir": "templates",
+    "bootstrapScript": "scripts/bootstrap-prod.sh",
+    "remoteKind": "github"
+  }
+}

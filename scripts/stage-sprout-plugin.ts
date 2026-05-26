@@ -1,17 +1,22 @@
 /**
- * Stage the first-party Sprout plugin (`plugins/sprout/`) into
- * `app/resources/plugins/sprout/` so the Electron bundle picks it up at
- * runtime via the plugin loader's `bundledDir` scan.
+ * Stage the first-party Sprout plugins into `app/resources/plugins/` so the
+ * Electron bundle picks them up at runtime via the plugin loader's
+ * `bundledDir` scan.
  *
- * As part of staging, this script also pre-installs `node_modules` inside the
- * starter template — so when the AI scaffolds a new project at runtime, the
- * bootstrap script is just a file copy (a few seconds) instead of a 2–4
- * minute `npm install`. The template's deps live in the staged copy and
- * travel with the desktop bundle.
+ * Two plugins are staged:
+ *
+ *   • `sprout` — the new-app starter. Has a heavy `templates/hono-react/`
+ *     subdirectory we pre-install node_modules into so AI-scaffold time is
+ *     fast (seconds vs minutes).
+ *
+ *   • `sprout-cicd-github` — the GitHub Actions deploy provider for
+ *     "Publish to prod" (Phase 4). Plain file copy; the templates here are
+ *     copied into the USER's project at deploy time, where their bootstrap
+ *     script (not Sprout) installs the projen + cdk deps.
  *
  * Cache control:
  *   • Skip the npm install if node_modules already exists AND package.json
- *     hasn't changed (mtime check). Keeps `pj build` fast on the hot loop.
+ *     hasn't changed. Keeps `pj build` fast on the hot loop.
  *   • Set SKIP_TEMPLATE_INSTALL=1 to force-skip (useful for offline machines
  *     that don't have a populated npm cache yet).
  */
@@ -26,6 +31,9 @@ const ROOT = path.resolve(__dirname, '..');
 const SRC = path.join(ROOT, 'plugins', 'sprout');
 const DEST = path.join(ROOT, 'app', 'resources', 'plugins', 'sprout');
 const TEMPLATE_REL = path.join('templates', 'hono-react');
+
+const CICD_SRC = path.join(ROOT, 'plugins', 'sprout-cicd-github');
+const CICD_DEST = path.join(ROOT, 'app', 'resources', 'plugins', 'sprout-cicd-github');
 
 async function main(): Promise<void> {
   // Sanity-check source has the expected structure.
@@ -75,6 +83,32 @@ async function main(): Promise<void> {
   }
 
   console.log(`→ ${path.relative(ROOT, DEST)}`);
+
+  // ── Stage sprout-cicd-github ────────────────────────────────────────
+  await stageCicdGithub();
+}
+
+/**
+ * Stage `plugins/sprout-cicd-github/` into `app/resources/plugins/sprout-cicd-github/`.
+ *
+ * Unlike the sprout starter plugin, this one's `templates/` are copied into
+ * the user's project at deploy time (not extracted at scaffold time). We
+ * deliberately do NOT pre-install node_modules here — the templates'
+ * package.json.patch declares projen + cdk as devDependencies that the
+ * post-copy bootstrap script installs in the user's actual project.
+ */
+async function stageCicdGithub(): Promise<void> {
+  const manifest = path.join(CICD_SRC, '.claude-plugin', 'plugin.json');
+  const bootstrap = path.join(CICD_SRC, 'scripts', 'bootstrap-prod.sh');
+  for (const p of [manifest, bootstrap]) {
+    await fs.stat(p).catch(() => {
+      throw new Error(`stage-sprout-plugin (cicd-github): required file missing: ${p}`);
+    });
+  }
+  await fs.rm(CICD_DEST, { recursive: true, force: true });
+  await copyDir(CICD_SRC, CICD_DEST);
+  await fs.chmod(path.join(CICD_DEST, 'scripts', 'bootstrap-prod.sh'), 0o755).catch(() => undefined);
+  console.log(`→ ${path.relative(ROOT, CICD_DEST)}`);
 }
 
 /**

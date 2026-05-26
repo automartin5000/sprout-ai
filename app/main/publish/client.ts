@@ -9,6 +9,10 @@ export interface PublishOptions {
   projectRoot: string;
   /** The cloud-side projectId — addresses the row in the Sprout API. */
   projectId: string;
+  /** Human-readable project name. Sent on the publish request so the API
+   *  can auto-register the project on first publish with a sensible name
+   *  (vs falling back to the projectId UUID). */
+  projectName?: string;
   /** Optional share code for collaborator publishes (no JWT). */
   shareCode?: string;
   /**
@@ -75,9 +79,16 @@ export class PublishClient {
       serverUploadUrl?: string;
       publishedUrl: string;
     };
+    // Pass projectName so the API can auto-register the project on first
+    // publish (the desktop creates projects locally only; the cloud side
+    // sees them for the first time here). Share-code publishes hit an
+    // already-existing project so the name isn't needed.
     const start = opts.shareCode
       ? await this.api.post<StartResp>(`/share/${opts.shareCode}/publish`, {}, { anonymous: true })
-      : await this.api.post<StartResp>(`/projects/${opts.projectId}/publish`, {});
+      : await this.api.post<StartResp>(
+          `/projects/${opts.projectId}/publish`,
+          { projectName: opts.projectName },
+        );
 
     // 4. Upload both bundles in parallel.
     const totalBytes = staticBuf.byteLength + (serverBuf?.byteLength ?? 0);
@@ -89,13 +100,21 @@ export class PublishClient {
         : Promise.resolve(),
     ]);
 
-    // 5. Tell the API to promote the bundles + bump the version.
+    // 5. Tell the API to promote the bundles + bump the version. The share-code
+    //    flow has its own anonymous complete endpoint that mirrors the owner one;
+    //    we just swap the URL based on whether opts.shareCode is set.
     progress({ phase: 'activating' });
     type CompleteResp = { version: number; publishedUrl: string };
-    const complete = await this.api.post<CompleteResp>(
-      `/projects/${opts.projectId}/publish/complete`,
-      { version: start.version, hasServer },
-    );
+    const complete = opts.shareCode
+      ? await this.api.post<CompleteResp>(
+          `/share/${opts.shareCode}/publish/complete`,
+          { version: start.version, hasServer },
+          { anonymous: true },
+        )
+      : await this.api.post<CompleteResp>(
+          `/projects/${opts.projectId}/publish/complete`,
+          { version: start.version, hasServer },
+        );
 
     progress({ phase: 'live', url: complete.publishedUrl });
     return { version: complete.version, publishedUrl: complete.publishedUrl };
@@ -167,6 +186,11 @@ export class PublishClient {
     const hasDist = await dirExists(path.join(root, 'dist'));
     const hasOut = await dirExists(path.join(root, 'out'));
     const hasPublic = await dirExists(path.join(root, 'public'));
+    // The sprout hono-react starter compiles its Hono server to
+    // `server-dist/server.js` via esbuild. If both server-dist/ and dist/
+    // are present, this is the "vite + Hono" pattern and we package BOTH:
+    // dist/ → static.tar.gz, server-dist/ → server.zip.
+    const hasServerDist = await dirExists(path.join(root, 'server-dist'));
 
     // Decide layout
     if (hasNextStandalone) {
@@ -193,8 +217,15 @@ export class PublishClient {
     }
 
     if (hasDist) {
-      // Vite / generic static
+      // Static side always goes from dist/. If server-dist/ exists too,
+      // this is the Sprout hono-react template (vite + Hono) — bundle the
+      // server bits too. Without this branch, the publish always lands as
+      // static-only and any /api routes 404 in prod.
       await tarOrZip({ kind: 'tar', cwd: path.join(root, 'dist'), out: staticTar });
+      if (hasServerDist) {
+        await tarOrZip({ kind: 'zip', cwd: path.join(root, 'server-dist'), out: serverZip });
+        return { staticTar, serverZip, hasServer: true };
+      }
       return { staticTar, hasServer: false };
     }
 

@@ -4,14 +4,18 @@ import type { BrowserWindow } from 'electron';
 import type { Project } from '../../shared/api-contract.js';
 import { Auth0Native, type UserProfile } from './auth/auth0-native.js';
 import { ApiClient, buildTokenProvider } from './cloud/api-client.js';
+import { isGhAvailable } from './deploy/gh-cli.js';
+import { ProdDeployClient } from './deploy/prod-client.js';
+import { resolveActiveProvider } from './deploy/provider-resolver.js';
+import { SproutConfigStore } from './deploy/sprout-config.js';
 import { HarnessRegistry } from './harness/registry.js';
 import type { HarnessSession, PermissionRequest } from './harness/types.js';
 import { OnboardingStateStore } from './onboarding/state.js';
-import { discoverPlugins } from './plugins/loader.js';
-import type { LoadedPlugin } from './plugins/types.js';
+import { discoverPlugins, loadCicdProviders } from './plugins/loader.js';
+import type { LoadedCicdProvider, LoadedPlugin } from './plugins/types.js';
 import { ProjectManager } from './projects/manager.js';
 import { PublishClient } from './publish/client.js';
-import type { ApiSurface, OnboardingStatus, PublishProgressEvent } from './ipc.js';
+import type { ApiSurface, DeployStatus, OnboardingStatus, ProdDeployProgressEvent, PublishProgressEvent } from './ipc.js';
 
 /**
  * System prompt prepended to every Sprout chat session. The contract here is
@@ -70,6 +74,14 @@ export interface ServicesOpts {
    *  from a project, so the WebContentsView doesn't keep painting over the
    *  empty right pane after the React shell has swapped to onboarding. */
   detachPreview: () => void;
+  /** Show/hide the preview WebContentsView without tearing it down. The
+   *  native view paints on top of HTML regardless of CSS z-index, so any
+   *  HTML modal needs to call this with `false` on mount to be visible. */
+  setPreviewVisible: (visible: boolean) => void;
+  /** Constrain the WebContentsView to the requested device. `phone` shrinks
+   *  it to PHONE_WIDTH and centers it inside the preview column; `desktop`
+   *  fills the column. */
+  setPreviewDevice: (device: 'desktop' | 'phone') => void;
 }
 
 /**
@@ -88,11 +100,14 @@ export class Services {
   private readonly auth0?: Auth0Native;
   private readonly mockAuth: boolean;
   private readonly onboarding = new OnboardingStateStore();
+  private readonly sproutConfig = new SproutConfigStore();
   private readonly apiClient: ApiClient;
   private readonly publishClient: PublishClient;
+  private readonly prodDeployClient = new ProdDeployClient();
 
   private profile?: UserProfile;
   private plugins: LoadedPlugin[] = [];
+  private cicdProviders: LoadedCicdProvider[] = [];
   private currentSession?: HarnessSession;
   private currentSessionProject?: string;
   private currentSessionHarnessId?: string;
@@ -124,17 +139,26 @@ export class Services {
   }
 
   async init(): Promise<void> {
-    // `process.resourcesPath` is undefined outside the Electron runtime
-    // (e.g. the bundle-smoke test). Fall back to an obviously-absent dir
-    // so the plugin loader's stat will just produce zero plugins instead
-    // of throwing.
-    const resources = process.resourcesPath || path.join(app.getPath('userData'), '_no_bundled_resources');
-    const bundledPluginsDir = path.join(resources, 'plugins');
+    // Plugin discovery: prefer SPROUT_BUNDLED_PLUGINS_DIR (set by
+    // scripts/dev-electron.ts to point at the source-tree staged dir during
+    // dev), fall back to process.resourcesPath/plugins (where electron-builder
+    // copies app/resources/plugins for production). `process.resourcesPath`
+    // is undefined outside the Electron runtime (e.g. the bundle-smoke test),
+    // so we have a final fallback that produces zero plugins instead of throwing.
+    const bundledPluginsDir =
+      process.env.SPROUT_BUNDLED_PLUGINS_DIR
+      ?? (process.resourcesPath
+          ? path.join(process.resourcesPath, 'plugins')
+          : path.join(app.getPath('userData'), '_no_bundled_resources', 'plugins'));
     const userPluginsDir = path.join(app.getPath('userData'), 'plugins');
     this.plugins = await discoverPlugins({
       bundledDir: bundledPluginsDir,
       userDir: userPluginsDir,
     });
+    // Subset of plugins that declare a `cicd:` manifest block — these are the
+    // candidates for "Publish to prod". Stored once at init so deploy:status
+    // doesn't re-scan disk on every renderer poll.
+    this.cicdProviders = loadCicdProviders(this.plugins);
 
     // Apply persisted projects-root choice (if any) so ProjectManager creates
     // new projects in the user's chosen folder rather than userData/projects.
@@ -225,10 +249,19 @@ export class Services {
       'projects:list': async () => this.projects.list(),
 
       'projects:create': async ({ name, slug, harnessId }) => {
+        // If the caller didn't pick a harness, route to whichever the
+        // registry thinks is best given THIS machine's installed tooling
+        // (Copilot CLI, Claude SDK, mock, etc.). Without this, ProjectManager
+        // would hardcode `copilot` for the persisted harnessId, and on first
+        // open the auto-migration would flip it to the real default —
+        // visible but harmless flicker. Resolving here keeps the saved
+        // value honest from the start.
+        const resolvedHarness = (harnessId as Project['harnessId'] | undefined)
+          ?? (this.registry.defaultAdapterId() as Project['harnessId']);
         const rec = await this.projects.create({
           name,
           slug,
-          harnessId: harnessId as Project['harnessId'] | undefined,
+          harnessId: resolvedHarness,
         });
         return rec.project;
       },
@@ -260,6 +293,39 @@ export class Services {
       },
 
       'projects:hasContent': async ({ projectId }) => this.projects.hasContent(projectId),
+
+      'projects:checkpoints': async ({ projectId, limit }) => {
+        // Read the git log of the project's worktree. Each harness-turn
+        // ends with a `checkpoint:` commit; we surface the most recent
+        // entries to power the bottom-of-preview save-points timeline.
+        // `open` is idempotent and cheap.
+        const rec = await this.projects.open(projectId);
+        const entries = await rec.worktree.log(limit ?? 12);
+        // Drop the "sprout: project init" empty commit — it's an artifact
+        // of `Worktree.create`, not a real save point. Trim the
+        // "checkpoint: " prefix from the rest so the UI shows the raw
+        // user-message subject.
+        return entries
+          .filter((e) => !/^sprout: project init/.test(e.subject))
+          .map((e) => ({
+            hash: e.hash,
+            subject: e.subject.replace(/^checkpoint:\s*/, ''),
+            ts: e.ts,
+          }));
+      },
+
+      'projects:restoreCheckpoint': async ({ projectId, hash }) => {
+        const rec = await this.projects.open(projectId);
+        await rec.worktree.restore(hash);
+      },
+
+      'preview:setDevice': async ({ device }) => {
+        this.deps.setPreviewDevice(device);
+      },
+
+      'preview:setVisible': async ({ visible }) => {
+        this.deps.setPreviewVisible(visible);
+      },
 
       'projects:delete': async ({ projectId }) => {
         // If the project we're deleting is the active harness session's
@@ -384,14 +450,15 @@ export class Services {
           // so it threw NoDevServerError on the empty worktree. Now that
           // package.json / index.html likely exist, give it another go.
           // startDevServer dedupes if one is already running.
-          try {
-            const previewUrl = await this.projects.startDevServer(projectId);
-            this.deps.attachPreview(previewUrl);
-          } catch {
-            // NoDevServerError (still nothing scaffolded) or other failure
-            // — silently leave the chat-only layout in place. The next turn
-            // will retry.
-          }
+          //
+          // Retry with backoff: a freshly-scaffolded project may still be
+          // running `npm install` when this fires, or the agent may be
+          // mid-flight on a follow-up turn that hasn't written
+          // package.json yet. Without the retries, the user has to
+          // back out + reopen the project for the preview to attach. The
+          // delays cover both fast scaffolds (~500ms) and slow ones
+          // (npm install on a cold cache, ~20-30s).
+          void this.retryStartPreview(projectId);
         })();
 
         return { streamChannel };
@@ -419,14 +486,19 @@ export class Services {
         return this.publishClient.publish({
           projectRoot: rec.worktree.root,
           projectId,
+          projectName: rec.project.name,
           onProgress: (event) => send(event),
         });
       },
 
       'projects:share': async ({ projectId, grants, expiresAt }) => {
+        // Include projectName so the API's auto-register fallback (when this
+        // is the user's first cloud touchpoint for this project) stamps a
+        // human-readable name rather than the projectId UUID.
+        const rec = await this.projects.open(projectId);
         return this.apiClient.post<{ code: string }>(
           `/projects/${projectId}/share`,
-          { grants, expiresAt },
+          { grants, expiresAt, projectName: rec.project.name },
         );
       },
 
@@ -455,7 +527,125 @@ export class Services {
         //    and the user can re-pull via "Sync" later. Tracked as a follow-up.
         return rec.project;
       },
+
+      'deploy:status': async () => this.buildDeployStatus(),
+
+      'deploy:setProvider': async ({ pluginName }) => {
+        // Persist the choice if it's actually a candidate. Silently ignore
+        // a stale request (e.g. the corp plugin was uninstalled between
+        // picker render and click).
+        const known = this.cicdProviders.some((p) => p.pluginName === pluginName);
+        if (known) {
+          await this.sproutConfig.save({ activeCicdProvider: pluginName });
+        }
+        return this.buildDeployStatus();
+      },
+
+      'projects:deployToProd': async ({ projectId }) => {
+        const rec = await this.projects.open(projectId);
+        const resolution = await resolveActiveProvider({
+          providers: this.cicdProviders,
+          config: this.sproutConfig,
+        });
+        if (resolution.kind !== 'active') {
+          throw new Error(
+            resolution.kind === 'none'
+              ? 'No deploy plugin installed on this machine. Ask your admin (or see the Sprout docs) to install a sprout-cicd-* plugin.'
+              : 'Multiple deploy plugins are installed but none is selected. Pick one in the deploy modal first.',
+          );
+        }
+        const window = this.deps.mainWindow();
+        const send = (event: ProdDeployProgressEvent): void => {
+          window?.webContents.send(`prod-deploy:progress:${projectId}`, event);
+        };
+        return this.prodDeployClient.deployToProd({
+          projectRoot: rec.worktree.root,
+          // The IPC payload's `projectId` is the Sprout-side id (Crockford or
+          // UUID). Pass it verbatim so the scaffolded CDK stack bakes the
+          // SAME id into SPROUT_PROJECT_ID as the sandbox used — keeps DDB
+          // key prefixes (`PROJECT#${SPROUT_PROJECT_ID}#…`) identical across
+          // sandbox → prod promotion.
+          projectId,
+          projectName: rec.project.slug,
+          provider: resolution.provider,
+          onProgress: send,
+        });
+      },
     };
+  }
+
+  /**
+   * Compose the DeployStatus payload returned by the `deploy:status` IPC
+   * channel. Resolves which provider (if any) is active on this machine,
+   * Try to start the dev server for a project, retrying with backoff to
+   * accommodate post-turn timing: the agent may have JUST written
+   * package.json and still be running `npm install`, or it may have ended
+   * its turn early and be queueing a follow-up turn. We retry over ~30s
+   * total so the preview shows up as soon as the project is runnable,
+   * without requiring the user to navigate away and back.
+   *
+   * Each successful attempt notifies the renderer via attachPreview → the
+   * `preview:url` IPC, which flips the layout from chat-only to split.
+   * Errors are swallowed silently; the LAST retry's failure just leaves
+   * the user on chat-only, which is the existing graceful-degrade.
+   *
+   * Initial-delay note: 2.5s is intentionally NOT instant. Agents
+   * commonly finish a "scaffold the template" tool, signal turn_end,
+   * THEN do follow-up edits to specialize the template into the real
+   * app. Without the gap, the dev server attaches to the unmodified
+   * template state (e.g., the hono-react "Hello" greeting widget) and
+   * the user sees the wrong app for a few seconds before Vite HMR
+   * refreshes. The gap lets the agent's tail-end writes settle so the
+   * first thing the user sees is closer to the final state.
+   */
+  private async retryStartPreview(projectId: string): Promise<void> {
+    // Tuned for the common case (Vite dev server up in ~1-2s after the
+    // agent's last file write) plus a long tail for cold npm installs.
+    // Gaps widen so we don't pile on requests during slow installs.
+    const delaysMs = [2500, 3500, 5000, 8000, 12000];
+    for (const delay of delaysMs) {
+      await new Promise((r) => setTimeout(r, delay));
+      try {
+        const url = await this.projects.startDevServer(projectId);
+        this.deps.attachPreview(url);
+        return; // success — startDevServer dedupes future calls
+      } catch {
+        // NoDevServerError or other transient failure — keep trying.
+      }
+    }
+  }
+
+  /**
+   * Compose the DeployStatus payload returned by the `deploy:status` IPC
+   * channel. Resolves which provider (if any) is active on this machine,
+   * lists all installed providers (so the UI can render a picker when
+   * multiple are present), and checks whether `gh` is available — the
+   * GitHub provider can't run without it.
+   */
+  private async buildDeployStatus(): Promise<DeployStatus> {
+    const resolution = await resolveActiveProvider({
+      providers: this.cicdProviders,
+      config: this.sproutConfig,
+    });
+    const candidates = this.cicdProviders.map((p) => ({
+      pluginName: p.pluginName,
+      label: p.manifest.label,
+    }));
+    const ghInstalled = await isGhAvailable();
+
+    if (resolution.kind === 'active') {
+      return {
+        resolution: 'active',
+        activeProvider: resolution.provider.pluginName,
+        activeLabel: resolution.provider.manifest.label,
+        candidates,
+        ghInstalled,
+      };
+    }
+    if (resolution.kind === 'choose') {
+      return { resolution: 'choose', candidates, ghInstalled };
+    }
+    return { resolution: 'none', candidates, ghInstalled };
   }
 
   /**
