@@ -39,7 +39,21 @@ const MAIN_BANNER = [
  * The `external` array is belt+suspenders for a few we always want excluded
  * even if a future change to `packages` would otherwise pull them in.
  */
-export function mainBundleConfig(opts: { root: string; outDir: string }): BuildOptions {
+export function mainBundleConfig(opts: {
+  root: string;
+  outDir: string;
+  /**
+   * Optional `define:` map for build-time env-var inlining. Set ONLY by
+   * the production build path (`scripts/build-electron-main.ts`); dev
+   * intentionally leaves it undefined so `process.env.X` stays live and
+   * `.env` continues to work without rebuilds.
+   *
+   * Keys are typically `process.env.AUTH0_DOMAIN`-style; values are the
+   * JSON-encoded string literals esbuild substitutes in. See
+   * `scripts/load-build-config.ts` for the source-of-truth list.
+   */
+  defineEnv?: Record<string, string>;
+}): BuildOptions {
   return {
     entryPoints: [path.join(opts.root, 'app/main/index.ts')],
     outfile: path.join(opts.outDir, 'main/index.js'),
@@ -53,6 +67,7 @@ export function mainBundleConfig(opts: { root: string; outDir: string }): BuildO
     packages: 'external',
     external: ['electron', 'keytar', '@github/copilot-sdk', '@anthropic-ai/claude-agent-sdk'],
     banner: { js: MAIN_BANNER },
+    define: opts.defineEnv,
     logLevel: 'info',
   };
 }

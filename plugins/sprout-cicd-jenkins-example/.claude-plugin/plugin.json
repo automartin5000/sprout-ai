@@ -1,0 +1,6 @@
+{
+  "name": "sprout-cicd-jenkins-example",
+  "description": "REFERENCE ONLY — not auto-loaded. Demonstrates the layout a work-machine sprout-cicd-jenkins plugin should follow. To turn this into a real provider, copy this directory, rename to `sprout-cicd-jenkins`, fill in templates/Jenkinsfile + the corp projen libs, and add a `cicd: { ... }` block to this manifest (see docs/runbooks/cicd-jenkins.md).",
+  "version": "0.0.0",
+  "license": "MIT"
+}

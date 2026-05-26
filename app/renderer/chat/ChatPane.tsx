@@ -39,54 +39,101 @@ interface DisplayMessage {
 /* ── Helpers ────────────────────────────────────────────────── */
 
 function toolLabel(name: string, input: Record<string, unknown>): { label: string; file: string } {
-  switch (name) {
-    case 'Bash': {
+  // Normalize tool names across harnesses. Claude uses PascalCase
+  // (`Bash`, `Edit`); the Copilot CLI uses snake_case (`bash`,
+  // `str_replace_editor`, `create_file`). Lowercase both before
+  // matching so the same labels work for either.
+  switch (name.toLowerCase()) {
+    case 'bash':
+    case 'shell':
+    case 'run_in_terminal': {
       const desc = String(input['description'] ?? '');
       const cmd = String(input['command'] ?? '');
       return { label: desc || truncate(cmd, 48), file: '—' };
     }
-    case 'Read': {
-      const fp = String(input['file_path'] ?? input['path'] ?? '');
+    case 'read':
+    case 'read_file':
+    case 'view':
+    case 'view_file': {
+      const fp = String(input['file_path'] ?? input['path'] ?? input['filePath'] ?? '');
       return { label: 'Reading file', file: basename(fp) };
     }
-    case 'Edit':
-    case 'MultiEdit': {
-      const fp = String(input['file_path'] ?? input['path'] ?? '');
+    case 'edit':
+    case 'multiedit':
+    case 'edit_file':
+    case 'str_replace':
+    case 'str_replace_editor': {
+      const fp = String(input['file_path'] ?? input['path'] ?? input['filePath'] ?? '');
       return { label: 'Editing file', file: basename(fp) };
     }
-    case 'Write': {
-      const fp = String(input['file_path'] ?? input['path'] ?? '');
+    case 'write':
+    case 'create_file':
+    case 'write_file': {
+      const fp = String(input['file_path'] ?? input['path'] ?? input['filePath'] ?? '');
       return { label: 'Writing file', file: basename(fp) };
     }
-    case 'Glob':
-    case 'Grep': {
-      return { label: name === 'Glob' ? 'Scanning files' : 'Searching code', file: '—' };
+    case 'glob':
+    case 'grep':
+    case 'find':
+    case 'search':
+    case 'codebase_search': {
+      return { label: name === 'glob' || name === 'find' ? 'Scanning files' : 'Searching code', file: '—' };
     }
-    case 'Skill': {
+    case 'list_dir':
+    case 'ls': {
+      const p = String(input['path'] ?? input['dir'] ?? '.');
+      return { label: 'Looking around', file: basename(p) };
+    }
+    case 'skill': {
       const skill = String(input['skill'] ?? input['name'] ?? '');
       return { label: `Launching skill`, file: skill };
     }
-    case 'Agent': {
+    case 'agent': {
       const agent = String(input['agent'] ?? input['name'] ?? '');
       return { label: `Running agent`, file: agent || '—' };
     }
-    case 'Task': {
+    case 'task': {
       return { label: 'Spawning task', file: '—' };
     }
     default:
-      return { label: name, file: '—' };
+      // Final fallback for genuinely unknown tools — humanize the raw
+      // snake_case/PascalCase name so it at least reads as English
+      // ("create_file" → "create file", "ReadDir" → "Read dir").
+      return { label: humanizeToolName(name), file: '—' };
   }
 }
 
 function inferCardTitle(name: string): string {
-  switch (name) {
-    case 'Bash': return 'Running commands';
-    case 'Read': return 'Reading files';
-    case 'Edit': case 'Write': case 'MultiEdit': return 'Editing files';
-    case 'Skill': return 'Running skill';
-    case 'Agent': return 'Delegating to agent';
+  switch (name.toLowerCase()) {
+    case 'bash':
+    case 'shell':
+    case 'run_in_terminal':
+      return 'Running commands';
+    case 'read':
+    case 'read_file':
+    case 'view':
+    case 'view_file':
+      return 'Reading files';
+    case 'edit':
+    case 'multiedit':
+    case 'edit_file':
+    case 'str_replace':
+    case 'str_replace_editor':
+    case 'write':
+    case 'create_file':
+    case 'write_file':
+      return 'Editing files';
+    case 'skill': return 'Running skill';
+    case 'agent': return 'Delegating to agent';
     default: return 'Working…';
   }
+}
+
+function humanizeToolName(name: string): string {
+  return name
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase();
 }
 
 function basename(p: string): string {
@@ -165,6 +212,35 @@ function StopIcon(): React.ReactElement {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+    </svg>
+  );
+}
+
+function PaperclipIcon(): React.ReactElement {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+    </svg>
+  );
+}
+
+function ImageIcon(): React.ReactElement {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+      <circle cx="8.5" cy="8.5" r="1.5"/>
+      <polyline points="21 15 16 10 5 21"/>
+    </svg>
+  );
+}
+
+function MicIcon(): React.ReactElement {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
     </svg>
   );
 }
@@ -556,16 +632,18 @@ export function ChatPane({ project }: { project?: Project }): React.ReactElement
         )}
 
         {messages.map((m) => {
+          // Phase 6 (Sprout v2): messages render Messages.app-style — no
+          // avatars, the author label + bubble carry identity. `.msg.user`
+          // is a terracotta gradient bubble right-aligned; `.msg.sprout` is
+          // a flat cream card on the left. The shared `.msg` flex-column
+          // means the author label sits *above* the bubble.
           if (m.role === 'user') {
             return (
               <div key={m.id} className="msg user">
-                <div className="avatar">M</div>
-                <div className="msg-bubble">
-                  <div className="msg-author">
-                    You <span className="dot" /> just now
-                  </div>
-                  <div className="msg-content">{renderInline(m.content)}</div>
+                <div className="msg-author">
+                  <b>You</b><span className="time">just now</span>
                 </div>
+                <div className="msg-content">{renderInline(m.content)}</div>
               </div>
             );
           }
@@ -573,9 +651,7 @@ export function ChatPane({ project }: { project?: Project }): React.ReactElement
           if (m.role === 'error') {
             return (
               <div key={m.id} className="msg error">
-                <div className="msg-bubble">
-                  <div className="msg-content">{m.content}</div>
-                </div>
+                <div className="msg-content">{m.content}</div>
               </div>
             );
           }
@@ -583,31 +659,22 @@ export function ChatPane({ project }: { project?: Project }): React.ReactElement
           // assistant
           return (
             <div key={m.id} className="msg sprout">
-              <div className="avatar avatar-sprout" style={{ background: 'linear-gradient(135deg, var(--accent), #8c4a23)' }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10z"/>
-                  <path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/>
-                </svg>
+              <div className="msg-author">
+                <b>Sprout</b><span className="time">{m.streaming ? 'thinking…' : 'just now'}</span>
               </div>
-              <div className="msg-bubble">
-                <div className="msg-author">
-                  sprout <span className="dot" />
-                  {m.streaming ? 'thinking…' : 'just now'}
-                </div>
-                <div className="msg-content">
-                  {renderInline(m.content)}
-                  {m.streaming && m.content === '' && (
-                    <span style={{ color: 'var(--ink-4)', fontStyle: 'italic', fontSize: 13 }}>…</span>
-                  )}
-                  {m.streaming && m.content !== '' && <span className="caret" />}
-                </div>
-                {m.actionCard && (
-                  <ActionCard card={m.actionCard} active={m.actionCard.active} />
+              <div className="msg-content">
+                {renderInline(m.content)}
+                {m.streaming && m.content === '' && (
+                  <span style={{ color: 'var(--ink-4)', fontStyle: 'italic', fontSize: 13 }}>…</span>
                 )}
-                {m.checkpoint && !m.streaming && (
-                  <CheckpointCard cp={m.checkpoint} userMsg={m.checkpoint.label} />
-                )}
+                {m.streaming && m.content !== '' && <span className="caret" />}
               </div>
+              {m.actionCard && (
+                <ActionCard card={m.actionCard} active={m.actionCard.active} />
+              )}
+              {m.checkpoint && !m.streaming && (
+                <CheckpointCard cp={m.checkpoint} userMsg={m.checkpoint.label} />
+              )}
             </div>
           );
         })}
@@ -655,7 +722,21 @@ export function ChatPane({ project }: { project?: Project }): React.ReactElement
             style={{ minHeight: 38 }}
           />
           <div className="composer-tools">
-            <div className="left" />
+            <div className="left">
+              {/* Attachment / image / mic affordances. Disabled with
+               * "coming soon" tooltips — the file-upload + voice pipelines
+               * aren't wired yet, but the icons signal that the surface
+               * supports them, which sets expectations correctly. */}
+              <button className="tool-btn" title="Attach a file (coming soon)" disabled>
+                <PaperclipIcon />
+              </button>
+              <button className="tool-btn" title="Add an image (coming soon)" disabled>
+                <ImageIcon />
+              </button>
+              <button className="tool-btn" title="Voice input (coming soon)" disabled>
+                <MicIcon />
+              </button>
+            </div>
             <div className="right">
               {pending ? (
                 <button className="stop-btn" onClick={handleStop} title="Stop">

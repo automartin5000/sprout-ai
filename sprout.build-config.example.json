@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy this file to sprout.build-config.json (gitignored) before running `pj app:package`. Values are baked into the bundled JS at build time — see scripts/load-build-config.ts. Missing values are allowed; the bundle still builds, but features that depend on them (Sign in, Share preview to sandbox) are disabled at runtime. See docs/PACKAGING.md for the full reference.",
+
+  "AUTH0_DOMAIN": "your-tenant.us.auth0.com",
+  "AUTH0_AUDIENCE": "https://api.your-domain.com",
+  "AUTH0_NATIVE_CLIENT_ID": "replace-with-your-native-app-client-id",
+  "CLOUD_API_URL": "https://api.your-domain.com",
+  "APPS_BASE_URL": "https://apps.your-domain.com"
+}

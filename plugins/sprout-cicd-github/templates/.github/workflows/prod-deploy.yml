@@ -1,0 +1,92 @@
+name: prod-deploy
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+jobs:
+  deploy_production:
+    name: Deploy to Production
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+      pull-requests: read
+    env:
+      DEPLOY_ENV: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find build artifact for the merged commit
+        id: find-artifact
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const headSha = context.payload.pull_request.head.sha;
+            const mergeCommitSha = context.payload.pull_request.merge_commit_sha;
+
+            const workflows = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const build = workflows.data.workflows.find(w => w.name === 'build');
+            if (!build) throw new Error('No build workflow found');
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: build.id,
+            });
+            const ok = runs.data.workflow_runs.find(r =>
+              (r.head_sha === headSha || r.head_sha === mergeCommitSha) &&
+              r.status === 'completed' && r.conclusion === 'success');
+            if (!ok) throw new Error(`No successful build for ${headSha} / ${mergeCommitSha}`);
+
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: ok.id,
+            });
+            const cdk = artifacts.data.artifacts.find(a =>
+              a.name === `cdk-out-${headSha}` || a.name === `cdk-out-${mergeCommitSha}`);
+            if (!cdk) throw new Error(`No cdk-out artifact for ${headSha} / ${mergeCommitSha}`);
+
+            return JSON.stringify({ artifactId: cdk.id, runId: ok.id });
+
+      - name: Parse artifact lookup output
+        id: details
+        run: |
+          R='${{ steps.find-artifact.outputs.result }}'
+          echo "artifact-id=$(echo "$R" | jq -r .artifactId)" >> $GITHUB_OUTPUT
+          echo "run-id=$(echo "$R" | jq -r .runId)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials (prod)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          audience: sts.amazonaws.com
+          role-to-assume: arn:aws:iam::${{ secrets.PROD_AWS_ACCOUNT_ID }}:role/github-actions-deployer
+
+      - name: Download CDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.details.outputs.artifact-id }}
+          run-id: ${{ steps.details.outputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: true
+          path: cdk.out/
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Deploy
+        run: bun projen deploy "prod/*" --app cdk.out --require-approval never
+
+      - name: Done
+        run: echo "🎉 Production deployment complete."

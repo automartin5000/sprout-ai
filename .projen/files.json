@@ -9,6 +9,7 @@
     ".projen/tasks.json",
     ".vscode/settings.json",
     "cdk.json",
+    "LICENSE",
     "tsconfig.dev.json",
     "tsconfig.json"
   ],

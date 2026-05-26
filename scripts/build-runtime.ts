@@ -71,6 +71,15 @@ async function buildEdgeRouter(): Promise<void> {
   const stage = path.join(distDir, 'edge-router-stage');
   fs.mkdirSync(stage, { recursive: true });
 
+  // Lambda@Edge cannot have env vars — the edge function reads
+  // `process.env.SPROUT_EDGE_TABLE_NAME` and falls back to a placeholder
+  // marker that ONLY works if it's substituted at build time. Bake the real
+  // table name in via esbuild's `define` so the deployed bundle has the
+  // literal string. DEPLOY_ENV is set by the projen task chain at synth
+  // time; default to 'dev' for local builds.
+  const deployEnv = process.env.DEPLOY_ENV ?? 'dev';
+  const tableName = `sprout-${deployEnv}`;
+
   await build({
     entryPoints: [path.join(runtimeDir, 'edge-router.ts')],
     outfile: path.join(stage, 'index.js'),
@@ -82,6 +91,12 @@ async function buildEdgeRouter(): Promise<void> {
     // Lambda@Edge: bundle EVERYTHING. No env vars, no shared layer, 1MB cap.
     minify: true,
     logLevel: 'info',
+    define: {
+      // Inline the table name. esbuild rewrites `process.env.SPROUT_EDGE_TABLE_NAME`
+      // to the literal at every call site, so the `?? '__SPROUT_TABLE_NAME__'`
+      // fallback in edge-router.ts becomes unreachable in the built bundle.
+      'process.env.SPROUT_EDGE_TABLE_NAME': JSON.stringify(tableName),
+    },
   });
 
   fs.writeFileSync(

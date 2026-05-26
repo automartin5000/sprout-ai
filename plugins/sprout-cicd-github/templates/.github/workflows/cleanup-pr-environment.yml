@@ -1,0 +1,32 @@
+name: cleanup-pr-environment
+on:
+  pull_request:
+    types: [closed]
+jobs:
+  cleanup_pr:
+    name: Destroy PR ephemeral env
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_ENV: pr${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Configure AWS credentials (nonprod)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          audience: sts.amazonaws.com
+          role-to-assume: arn:aws:iam::${{ secrets.NONPROD_AWS_ACCOUNT_ID }}:role/github-actions-deployer
+
+      - name: Destroy ephemeral stack
+        run: bun projen destroy "${DEPLOY_ENV}/*" --force

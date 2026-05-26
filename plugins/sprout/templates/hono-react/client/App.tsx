@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { api } from './lib/api.js';
 
 export function App(): React.ReactElement {
   const [message, setMessage] = useState<string>('Loading…');
@@ -6,7 +7,10 @@ export function App(): React.ReactElement {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    void fetch('/api/greeting')
+    // IMPORTANT: use `api()` from ./lib/api, NOT `fetch('/api/...')` directly.
+    // Sprout serves this SPA at /<projectId>/ in production, so origin-absolute
+    // fetches miss the prefix and 404. See lib/api.ts for the full story.
+    void api('/api/greeting')
       .then((r) => r.json())
       .then((d) => setMessage(d.message))
       .catch(() => setMessage('Hello'));
@@ -16,7 +20,7 @@ export function App(): React.ReactElement {
     if (!draft.trim() || saving) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/greeting', {
+      const res = await api('/api/greeting', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: draft.trim() }),

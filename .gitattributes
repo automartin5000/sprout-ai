@@ -13,6 +13,7 @@
 /.vscode/settings.json linguist-generated
 /bun.lockb linguist-generated
 /cdk.json linguist-generated
+/LICENSE linguist-generated
 /package.json linguist-generated
 /tsconfig.dev.json linguist-generated
 /tsconfig.json linguist-generated

@@ -1,0 +1,52 @@
+name: deploy-pr-environment
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  deploy_pr:
+    name: Deploy PR ephemeral env
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      DEPLOY_ENV: pr${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build app
+        run: bun run build
+
+      - name: Configure AWS credentials (nonprod)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          audience: sts.amazonaws.com
+          role-to-assume: arn:aws:iam::${{ secrets.NONPROD_AWS_ACCOUNT_ID }}:role/github-actions-deployer
+
+      - name: Deploy ephemeral stack
+        id: deploy
+        run: |
+          bun projen deploy "${DEPLOY_ENV}/*" --require-approval never --outputs-file pr-outputs.json
+          URL=$(jq -r '[.[] | to_entries[] | select(.key | test("Url|Endpoint"))][0].value' pr-outputs.json || echo "")
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Post URL to PR
+        if: ${{ steps.deploy.outputs.url != '' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `🚀 PR environment deployed: ${{ steps.deploy.outputs.url }}\n\nThis env is automatically torn down when the PR closes.`,
+            });

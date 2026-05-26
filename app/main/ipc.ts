@@ -49,6 +49,14 @@ export interface ApiSurface {
   /** True if the project's worktree has user content (any non-git file).
    *  Used to decide whether to show the "fresh-start" hero + sample prompts. */
   'projects:hasContent': (input: { projectId: string }) => Promise<boolean>;
+  /** Show/hide the native preview WebContentsView. The preview view is a
+   *  native overlay that paints OVER renderer HTML regardless of z-index —
+   *  any modal needs to call this with `{ visible: false }` on mount or it
+   *  will be hidden behind the preview pane. */
+  'preview:setVisible': (input: { visible: boolean }) => Promise<void>;
+  /** Constrain the preview WebContentsView to the requested device. `phone`
+   *  shrinks it to a centered phone-width column; `desktop` fills the pane. */
+  'preview:setDevice': (input: { device: 'desktop' | 'phone' }) => Promise<void>;
   /** Returns the most-recently-opened project, or undefined if the user has none. */
   'projects:current': () => Promise<Project | undefined>;
   /** Switch the harness adapter for a project and reset any active session. */
@@ -79,6 +87,48 @@ export interface ApiSurface {
   'projects:share': (input: { projectId: string; grants?: 'view' | 'edit'; expiresAt?: string }) => Promise<{ code: string }>;
   /** Open an existing project via a share code. Clones source to a new local project. */
   'projects:joinByCode': (input: { code: string }) => Promise<Project>;
+  /**
+   * List recent save points (git commits) for a project, newest first.
+   * Powers the bottom-of-preview timeline strip. Each entry is a
+   * harness-checkpoint commit; restoring is `projects:restoreCheckpoint`.
+   */
+  'projects:checkpoints': (input: { projectId: string; limit?: number }) =>
+    Promise<{ hash: string; subject: string; ts: string }[]>;
+  /** Reset the worktree to a previous save point. */
+  'projects:restoreCheckpoint': (input: { projectId: string; hash: string }) => Promise<void>;
+
+  // ── Deploy to prod (Phase 4) ────────────────────────────────────────
+  /**
+   * Report which CI/CD provider is active for "Publish to prod" on this
+   * machine. The renderer uses this to enable/disable the button and decide
+   * whether to show the picker.
+   */
+  'deploy:status': () => Promise<DeployStatus>;
+  /**
+   * Persist the user's CI/CD provider choice (`~/.sprout/config.json`).
+   * Used when multiple providers are installed and the user picks one in the
+   * deploy modal's one-time picker.
+   */
+  'deploy:setProvider': (input: { pluginName: string }) => Promise<DeployStatus>;
+  /**
+   * Run the full prod deploy flow against the user's active project. Listens
+   * on `prod-deploy:progress:<projectId>` for phase events. Resolves with the
+   * repo + PR URLs the user can click through.
+   */
+  'projects:deployToProd': (input: { projectId: string }) => Promise<{ repoUrl: string; prUrl: string }>;
+}
+
+export interface DeployStatus {
+  /** Resolution outcome — see provider-resolver.ts. */
+  resolution: 'active' | 'choose' | 'none';
+  /** The plugin name of the active provider, if `resolution === 'active'`. */
+  activeProvider?: string;
+  /** Display label of the active provider (e.g. "GitHub Actions"). */
+  activeLabel?: string;
+  /** All installed providers — surfaced when `resolution === 'choose'`. */
+  candidates: Array<{ pluginName: string; label: string }>;
+  /** `gh` CLI available on PATH — false → GitHub-provider deploys are blocked. */
+  ghInstalled: boolean;
 }
 
 export type ApiChannel = keyof ApiSurface;
@@ -96,6 +146,21 @@ export type PublishProgressEvent =
   | { phase: 'live'; url: string }
   | { phase: 'failed'; error: string };
 
+/**
+ * Phase events for the "Publish to prod" flow. Surfaced on
+ * `prod-deploy:progress:<projectId>` by the main-process orchestrator.
+ */
+export type ProdDeployProgressEvent =
+  | { phase: 'preflight' }
+  | { phase: 'scaffolding' }
+  | { phase: 'bootstrapping' }
+  | { phase: 'committing' }
+  | { phase: 'creating-repo' }
+  | { phase: 'pushing' }
+  | { phase: 'opening-pr' }
+  | { phase: 'done'; repoUrl: string; prUrl: string }
+  | { phase: 'failed'; error: string };
+
 export interface RendererBridge {
   invoke: ApiInvoke;
   onChatStream: (
@@ -105,6 +170,8 @@ export interface RendererBridge {
   onPreviewUrl: (handler: (url: string) => void) => () => void;
   /** Listen for publish progress on a specific job channel. */
   onPublishProgress: (jobId: string, handler: (event: PublishProgressEvent) => void) => () => void;
+  /** Listen for "Publish to prod" phase progress on a specific project. */
+  onProdDeployProgress: (projectId: string, handler: (event: ProdDeployProgressEvent) => void) => () => void;
 }
 
 /** Register all IPC handlers in the main process. */
@@ -140,6 +207,13 @@ export function buildRendererBridge(ipcRenderer: IpcRenderer): RendererBridge {
     onPublishProgress(jobId, handler) {
       const channel = `publish:progress:${jobId}`;
       const listener = (_e: unknown, event: PublishProgressEvent) => handler(event);
+      ipcRenderer.on(channel, listener);
+      return () => ipcRenderer.removeListener(channel, listener);
+    },
+
+    onProdDeployProgress(projectId, handler) {
+      const channel = `prod-deploy:progress:${projectId}`;
+      const listener = (_e: unknown, event: ProdDeployProgressEvent) => handler(event);
       ipcRenderer.on(channel, listener);
       return () => ipcRenderer.removeListener(channel, listener);
     },

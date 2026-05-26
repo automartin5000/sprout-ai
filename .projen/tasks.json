@@ -150,13 +150,13 @@
           "spawn": "plugins:stage-sprout"
         },
         {
-          "exec": "bun run lambda:build"
+          "exec": "bunx tsx scripts/build-lambda.ts"
         },
         {
-          "exec": "bun run runtime:build"
+          "exec": "bunx tsx scripts/build-runtime.ts"
         },
         {
-          "exec": "bun run app:build"
+          "spawn": "app:build"
         }
       ]
     },

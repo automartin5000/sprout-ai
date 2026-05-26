@@ -34,7 +34,10 @@ import {
   CachePolicy,
   Distribution,
   LambdaEdgeEventType,
+  OriginRequestCookieBehavior,
+  OriginRequestHeaderBehavior,
   OriginRequestPolicy,
+  OriginRequestQueryStringBehavior,
   PriceClass,
   ViewerProtocolPolicy,
 } from 'aws-cdk-lib/aws-cloudfront';
@@ -123,9 +126,49 @@ export class SproutStack extends cdk.Stack {
 
     // ---- Lambda@Edge router ------------------------------------------------
     this.edgeRouter = this.createEdgeRouter(props.envName);
+    // The edge router reads PROJECT#<id>/META from DDB on every cache miss
+    // to validate that a projectId exists + grab its current version. Without
+    // this grant the lookup throws and the router fail-opens — forwarding
+    // requests to the runtime Lambda for projects that don't exist, which
+    // then returns 403 (the Function URL's AWS_IAM auth blocks edge-bypass
+    // requests from arbitrary callers). Adding read-only DDB access on the
+    // single table the edge function needs.
+    this.table.grantReadData(this.edgeRouter);
 
     // ---- CloudFront distribution -------------------------------------------
     this.distribution = this.createDistribution(this.edgeRouter, runtimeUrl, this.assetsBucket);
+
+    // ---- Lambda Function URL permission (Oct-2025 rule) --------------------
+    // Per https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html (top
+    // of page note): "Starting in October 2025, new function URLs will
+    // require both `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`
+    // permissions." CDK's FunctionUrlOrigin.withOriginAccessControl only
+    // grants InvokeFunctionUrl — so out-of-the-box, CloudFront's OAC sigs
+    // are valid but Lambda still 403s for InvokeFunction. Add the second
+    // statement explicitly. SourceArn pins it to this distribution.
+    this.runtimeLambda.addPermission('CloudFrontOacInvokeFunction', {
+      principal: new cdk.aws_iam.ServicePrincipal('cloudfront.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
+      sourceArn: cdk.Fn.join('', [
+        'arn:',
+        cdk.Aws.PARTITION,
+        ':cloudfront::',
+        cdk.Aws.ACCOUNT_ID,
+        ':distribution/',
+        this.distribution.distributionId,
+      ]),
+    });
+
+    // The publishedUrl() helper in lambda/api/routes/publish.ts uses
+    // APPS_BASE_URL to build the per-project public URLs (and is what the
+    // desktop client surfaces to the user post-publish). With no custom
+    // hostedZone, that's the CloudFront default domain — wire it back into
+    // the API Lambda env so /publish, /publish/complete, and /share/:code/open
+    // all return reachable URLs instead of the apps.sprout.local fallback.
+    const appsBaseUrl = props.hostedZone
+      ? `https://apps.${props.envName}.sprout.${props.hostedZone}`
+      : cdk.Fn.join('', ['https://', this.distribution.distributionDomainName]);
+    this.apiLambda.addEnvironment('APPS_BASE_URL', appsBaseUrl);
 
     // ---- SSM discovery -----------------------------------------------------
     this.publishSsmParams(props.envName);
@@ -194,6 +237,13 @@ export class SproutStack extends cdk.Stack {
         DEPLOY_ENV: envName,
         CODE_BUCKET: this.codeBucket.bucketName,
         ASSETS_BUCKET: this.assetsBucket.bucketName,
+        // The uploads bucket has existed in this stack since Phase 3 and the
+        // runtime Lambda has read/write to it (grantReadWrite below), but the
+        // name was never plumbed through to user-app code. SKILL.md has been
+        // documenting SPROUT_UPLOADS_BUCKET as a usable var the whole time;
+        // exposing it here makes that documentation true. The handler reads
+        // this and re-exports it as SPROUT_UPLOADS_BUCKET per request.
+        UPLOADS_BUCKET: this.uploadsBucket.bucketName,
       },
     });
 
@@ -299,6 +349,11 @@ export class SproutStack extends cdk.Stack {
       '/projects/{id}/state',
       '/projects/{projectId}/chat',
       '/projects/{projectId}/publish',
+      // Phase 4.0 split publish into start + complete. Both halves need
+      // JWT routes registered or the second leg returns the API Gateway
+      // default 404 (and the desktop modal looks like the publish "did
+      // nothing" even though the staging bucket got the upload).
+      '/projects/{projectId}/publish/complete',
       '/projects/{projectId}/share',
       '/jobs/{jobId}',
       '/jobs/{jobId}/start',
@@ -315,6 +370,9 @@ export class SproutStack extends cdk.Stack {
     api.addRoutes({ path: '/share/{token}', methods: [HttpMethod.GET], integration });
     api.addRoutes({ path: '/share/{code}/open', methods: [HttpMethod.GET], integration });
     api.addRoutes({ path: '/share/{code}/publish', methods: [HttpMethod.POST], integration });
+    // Share-code publish/complete is also unauthenticated (the share code
+    // itself is the credential — same as /share/{code}/publish).
+    api.addRoutes({ path: '/share/{code}/publish/complete', methods: [HttpMethod.POST], integration });
     api.addRoutes({ path: '/healthz', methods: [HttpMethod.GET], integration });
 
     new cdk.CfnOutput(this, 'ApiEndpoint', { value: api.apiEndpoint });
@@ -363,32 +421,132 @@ export class SproutStack extends cdk.Stack {
       },
     ];
 
+    // For the api behavior we ALSO need the request body delivered to the
+    // edge function (IncludeBody: true) so it can compute SHA256(body) and
+    // inject `x-amz-content-sha256` before CloudFront signs the OAC request
+    // — Lambda Function URL otherwise rejects POST/PUT/PATCH with
+    // SignatureDoesNotMatch. AWS hard-caps IncludeBody bodies at 40 KB,
+    // which bounds the API request size for /api/*; CRUD JSON bodies are
+    // well under this in practice.
+    const edgeLambdasWithBody = [
+      {
+        functionVersion: edge.currentVersion,
+        eventType: LambdaEdgeEventType.VIEWER_REQUEST,
+        includeBody: true,
+      },
+    ];
+
+    // OAC + Lambda Function URL gotcha: when CloudFront's OAC signs the
+    // request to a Lambda Function URL, the signature lives in the
+    // Authorization header. If the OriginRequestPolicy ALSO forwards the
+    // viewer's Authorization header (as ALL_VIEWER_EXCEPT_HOST_HEADER does),
+    // the two headers fight — and in practice the signed request gets
+    // rejected with 403/AccessDeniedException at the Function URL boundary.
+    //
+    // Per AWS docs on "Origin access control for Lambda function URL
+    // origins": the origin request policy MUST NOT include Authorization.
+    // We allow-list the headers the user app actually needs (User-Agent,
+    // cookies, content-type, etc.) and explicitly omit Authorization.
+    // Headers set by the Lambda@Edge router (x-sprout-project-id, etc.)
+    // pass through automatically — they're not viewer headers.
+    const runtimeOriginPolicy = new OriginRequestPolicy(this, 'RuntimeOriginPolicy', {
+      originRequestPolicyName: `sprout-runtime-origin-policy-${this.stackEnv}`,
+      comment: 'Forwards viewer headers needed by user apps but NOT Authorization (OAC owns that)',
+      cookieBehavior: OriginRequestCookieBehavior.all(),
+      queryStringBehavior: OriginRequestQueryStringBehavior.all(),
+      // CDK validates that Authorization + Accept-Encoding cannot be in an
+      // OriginRequestPolicy allowList — they must come via CachePolicy
+      // instead. Authorization is exactly the header we WANT excluded
+      // (OAC sets it); Accept-Encoding we just don't forward at all.
+      //
+      // GOTCHA: the OriginRequestPolicy applies to ALL headers in the
+      // outgoing request, INCLUDING headers added by Lambda@Edge. So even
+      // though edge-router.ts calls setHeader('x-sprout-project-id', …),
+      // CloudFront strips it before forwarding unless the name is in this
+      // allow-list. The runtime Lambda then 400s with "missing X-Sprout-
+      // Project-Id". Both x-sprout-* headers MUST be allow-listed here.
+      // CloudFront caps an OriginRequestPolicy at 10 headers AND rejects
+      // certain header names that are handled elsewhere:
+      //   - Authorization / Accept-Encoding → managed via CachePolicy
+      //   - Cookie → handled by cookieBehavior (above)
+      //   - Host / Connection / etc → managed by CloudFront itself
+      // Listing any of those returns InvalidRequest from CFN.
+      headerBehavior: OriginRequestHeaderBehavior.allowList(
+        'User-Agent',
+        'Referer',
+        'Accept',
+        'Accept-Language',
+        'Content-Type',
+        'Content-Length',
+        'Origin',
+        'CloudFront-Forwarded-Proto',
+        'x-sprout-project-id',
+        'x-sprout-route',
+      ),
+    });
+
+    // CloudFront routes by ORIGINAL request URI (before any Lambda@Edge URI
+    // rewrites). So:
+    //   - `*/api/*` matches the original `/<projectId>/api/...` and goes to
+    //     the runtime Lambda Function URL.
+    //   - Everything else falls through to the default behavior, which hits
+    //     the assets S3 bucket. The edge router rewrites the URI to
+    //     `/<projectId>/v<version>/<rest>` (or `.../index.html` for SPA
+    //     routes) before S3 sees it, so static files are served straight
+    //     from cache with no Lambda hop.
     const distribution = new Distribution(this, 'SproutDistribution', {
       comment: `Sprout ${this.stackEnv} — path-routed multi-tenant front door`,
       priceClass: PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
-        origin: runtimeOrigin,
+        origin: assetsOrigin,
         viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        allowedMethods: AllowedMethods.ALLOW_ALL,
-        cachePolicy: CachePolicy.CACHING_DISABLED,
-        originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        // SPA shells don't need POST/PUT — but allowing all keeps the surface
+        // uniform and costs nothing for paths that never see those methods.
+        allowedMethods: AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+        cachePolicy: CachePolicy.CACHING_OPTIMIZED,
         edgeLambdas,
       },
       additionalBehaviors: {
-        // The edge router rewrites static-asset paths to `/<projectId>/<rest>`
-        // and we want CloudFront to send them to S3 instead of the runtime.
-        // The behavior key matches the rewritten URI pattern.
-        '*/_static/*': {
-          origin: assetsOrigin,
+        // `/api/*` (anchored at start, no leading wildcard) catches
+        // origin-absolute fetches from SPA code that forgot the project
+        // base path (e.g. `fetch("/api/scores")` from a page mounted at
+        // `/<id>/`). The edge function's Referer shim then recovers the
+        // projectId and rewrites the URI. Without this behavior, `/api/*`
+        // requests fall through to the S3 default and 403. Must come BEFORE
+        // `*/api/*` so CloudFront picks the more-specific anchored pattern
+        // for apex-relative requests.
+        '/api/*': {
+          origin: runtimeOrigin,
           viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: CachePolicy.CACHING_OPTIMIZED,
-          edgeLambdas,
+          allowedMethods: AllowedMethods.ALLOW_ALL,
+          cachePolicy: CachePolicy.CACHING_DISABLED,
+          compress: false,
+          edgeLambdas: edgeLambdasWithBody,
         },
-        '*/_next/static/*': {
-          origin: assetsOrigin,
+        // `*/api/*` matches `/<projectId>/api/<anything>` on the way in.
+        // Lambda@Edge runs with IncludeBody: true so it can compute
+        // SHA256(body) and inject `x-amz-content-sha256` before CloudFront's
+        // OAC signs the request to the Lambda Function URL. Per AWS docs,
+        // every POST/PUT to a Function URL behind OAC needs that header set
+        // by the caller; we set it at the edge so user apps don't have to.
+        //
+        // Compression off: CloudFront could re-encode bodies in transit if
+        // it negotiates gzip with the origin, which would invalidate the
+        // hash. Runtime serves JSON (small) — bandwidth cost is negligible.
+        //
+        // No OriginRequestPolicy: forward only the minimum CloudFront's
+        // signing/OAC requires (Host is overridden anyway). The user app's
+        // Hono handler doesn't rely on forwarded viewer headers; if that
+        // changes, add a minimal allow-list here (but be aware of the
+        // SigV4 interaction — every signed header must match what the
+        // Function URL sees).
+        '*/api/*': {
+          origin: runtimeOrigin,
           viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: CachePolicy.CACHING_OPTIMIZED,
-          edgeLambdas,
+          allowedMethods: AllowedMethods.ALLOW_ALL,
+          cachePolicy: CachePolicy.CACHING_DISABLED,
+          compress: false,
+          edgeLambdas: edgeLambdasWithBody,
         },
       },
     });

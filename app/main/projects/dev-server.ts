@@ -117,10 +117,17 @@ export class DevServer extends EventEmitter {
     }
     if (opts.projectId) env.SPROUT_PROJECT_ID = opts.projectId;
 
+    // `detached: true` puts the child in its own process group, so we can
+    // later kill the WHOLE TREE atomically via `process.kill(-pid, ...)`.
+    // Without this, `bun run dev` → concurrently → (npx tsx watch, vite)
+    // gets only the top `bun` SIGTERM'd, and the grandchildren keep
+    // holding ports 5174/5175 forever. That orphan chain is the root
+    // cause of the EADDRINUSE that breaks the NEXT `pj app:dev` launch.
     this.proc = spawn(command, args, {
       cwd: opts.projectRoot,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
 
     // We only capture the FIRST URL printed by the child process. For the
@@ -204,10 +211,26 @@ export class DevServer extends EventEmitter {
 
   async stop(): Promise<void> {
     if (!this.proc) return;
+    const pid = this.proc.pid;
     return new Promise((resolve) => {
       this.proc!.once('exit', () => resolve());
-      this.proc!.kill('SIGTERM');
-      setTimeout(() => this.proc?.kill('SIGKILL'), 3000);
+      // We spawned with `detached: true` so this child is its own process-
+      // group leader. Signal the whole group (negative pid → pgid) so
+      // every grandchild — vite, tsx watch, the bundled hono server —
+      // gets the same signal at the same time. Falling back to a plain
+      // proc.kill on a pid we don't have keeps us safe if spawn never
+      // produced one (failed to launch).
+      const killTree = (sig: NodeJS.Signals): void => {
+        try {
+          if (typeof pid === 'number') process.kill(-pid, sig);
+          else this.proc?.kill(sig);
+        } catch {
+          // ESRCH: already exited. Anything else: the SIGKILL fallback
+          // below will retry.
+        }
+      };
+      killTree('SIGTERM');
+      setTimeout(() => killTree('SIGKILL'), 3000);
     });
   }
 }
