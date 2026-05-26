@@ -60,6 +60,67 @@ interface SpawnedUrl {
   proc: ChildProcess;
 }
 
+/**
+ * Every child spawned by this supervisor is tracked here. `installGlobalCleanup()`
+ * uses it to nuke the whole tree synchronously on supervisor exit — even
+ * when the supervisor crashes via `process.exit(1)` instead of a clean
+ * SIGTERM. Without this, an API spawn failure (EADDRINUSE) would orphan
+ * vite + electron, which would then hold ports 5173/etc. and break the
+ * next `pj app:dev` launch.
+ */
+const trackedChildren: ChildProcess[] = [];
+let cleanupInstalled = false;
+
+function trackChild(proc: ChildProcess): void {
+  trackedChildren.push(proc);
+}
+
+/**
+ * Kill the whole process group of a child we spawned with `detached: true`.
+ * Sends `sig` to -pid (the group). Swallows ESRCH so we don't crash the
+ * supervisor when something already exited.
+ */
+function killGroup(proc: ChildProcess, sig: NodeJS.Signals): void {
+  if (typeof proc.pid !== 'number') return;
+  try {
+    process.kill(-proc.pid, sig);
+  } catch (err: unknown) {
+    const code = (err as { code?: string }).code;
+    if (code !== 'ESRCH') {
+      // Best-effort: fall back to a direct kill on the leader. Avoid
+      // crashing the supervisor since cleanup is already terminal.
+      try { proc.kill(sig); } catch { /* ignore */ }
+    }
+  }
+}
+
+function installGlobalCleanup(): void {
+  if (cleanupInstalled) return;
+  cleanupInstalled = true;
+  // process.on('exit') runs synchronously and is the LAST chance to do
+  // anything. Async work won't complete, but `process.kill(-pid, ...)` is
+  // synchronous — that's enough.
+  process.on('exit', () => {
+    for (const proc of trackedChildren) killGroup(proc, 'SIGTERM');
+  });
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(sig, () => {
+      for (const proc of trackedChildren) killGroup(proc, 'SIGTERM');
+      process.exit(0);
+    });
+  }
+  process.on('uncaughtException', (err) => {
+    console.error('uncaughtException in dev-electron:', err);
+    for (const proc of trackedChildren) killGroup(proc, 'SIGTERM');
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('unhandledRejection in dev-electron:', reason);
+    for (const proc of trackedChildren) killGroup(proc, 'SIGTERM');
+    process.exit(1);
+  });
+}
+
 function spawnAndCaptureUrl(args: {
   label: string;
   command: string;
@@ -68,11 +129,17 @@ function spawnAndCaptureUrl(args: {
   env?: NodeJS.ProcessEnv;
 }): Promise<SpawnedUrl> {
   return new Promise((resolve, reject) => {
+    // `detached: true` puts the child in its own process group — same
+    // reasoning as DevServer in app/main/projects/dev-server.ts. Without
+    // it, killing this `bunx` parent doesn't reach the `vite` or `tsx`
+    // grandchildren, and ports leak.
     const proc = spawn(args.command, args.commandArgs, {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ...args.env },
+      detached: true,
     });
+    trackChild(proc);
     proc.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
       process.stdout.write(`[${args.label}] ${text}`);
@@ -131,6 +198,11 @@ function loadDeployedApi(): string {
 }
 
 async function main(): Promise<void> {
+  // BEFORE any spawn: install the cleanup handlers so signals + crashes +
+  // process.exit() paths all SIGTERM whatever we've started so far.
+  // Without this, a failed API spawn would orphan vite + electron.
+  installGlobalCleanup();
+
   const useDeployed = process.env.SPROUT_USE_DEPLOYED === '1';
   console.log(`starting sprout dev environment... ${useDeployed ? '(real Auth0 + deployed API)' : '(local mock)'}`);
 
@@ -182,6 +254,7 @@ async function main(): Promise<void> {
   const electron = spawn('node', [electronBin, path.join(outDir, 'main/index.js')], {
     cwd: root,
     stdio: 'inherit',
+    detached: true,
     env: {
       ...process.env,
       VITE_DEV_SERVER_URL: vite.url,
@@ -200,16 +273,16 @@ async function main(): Promise<void> {
       SPROUT_BUNDLED_PLUGINS_DIR: path.join(root, 'app/resources/plugins'),
     },
   });
+  trackChild(electron);
+  // Suppress unused-var lint — localApiProc is still useful for future
+  // per-process status checks; the tracked array drives cleanup.
+  void localApiProc;
 
-  const cleanup = (): void => {
-    localApiProc?.kill('SIGTERM');
-    vite.proc.kill('SIGTERM');
-    electron.kill('SIGTERM');
-    process.exit(0);
-  };
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
-  electron.on('exit', cleanup);
+  // When Electron closes (user ⌘Q's it), shut down the whole dev stack
+  // and exit the supervisor cleanly. The exit-handler installed by
+  // installGlobalCleanup() takes care of SIGTERM'ing every tracked child
+  // — we just trigger the supervisor to exit.
+  electron.on('exit', () => process.exit(0));
 }
 
 void main().catch((err) => {
